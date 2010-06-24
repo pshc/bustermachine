@@ -66,8 +66,6 @@ listen h = forever $ do
     stripSource s       = (Nothing, stripLeft s)
     forever a = a >> forever a
 
-    stripLeft = dropWhile (== ' ')
-
     parseParams :: String -> ([String], Maybe String)
     parseParams = go []
       where
@@ -127,9 +125,15 @@ eval "!uptime"             = uptime >>= privmsg
 eval "!quit"               = do write "QUIT" ":Exiting"
                                 io (exitWith ExitSuccess)
 eval (stripPrefix "!id " -> Just x) = privmsg x
-eval ('!':s) = do onCmd <- onCommand `fmap` asks plugins
-                  maybe (privmsg "No such command") privmsg (onCmd s)
+eval ('!':s) = case words s of
+                 (w:_) -> do cmd <- (lookup w.regCommands) `fmap` asks plugins
+                             let params = stripLeft $ drop (length w) s
+                             maybe (privmsg ("No such command " ++ w ++ "."))
+                                   ((>>= mapM_ respond) . io . ($ params)) cmd
+                 []    -> privmsg "Command expected."
 eval _ = return ()
+
+respond (ChannelMessage t) = privmsg t
 
 privmsg s = write "PRIVMSG" (chan ++ " :" ++ s)
  

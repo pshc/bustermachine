@@ -1,11 +1,13 @@
 module Plugin where
 
+data Response = ChannelMessage String
+
 data API = Plugin {
-    onCommand :: String -> Maybe String
+    regCommands :: [(String, String -> IO [Response])]
 }
 
 plugin = Plugin {
-    onCommand = \x -> Just x
+    regCommands = [("what", \s -> return [ChannelMessage ("that " ++ s)])]
 }
 
 resource = plugin
