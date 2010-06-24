@@ -1,4 +1,4 @@
-{-# LANGUAGE ViewPatterns, ScopedTypeVariables #-}
+{-# LANGUAGE ViewPatterns #-}
 
 import Data.Char
 import Data.List
@@ -11,6 +11,7 @@ import Control.Exception
 import Text.Printf
 import Prelude hiding (catch, log)
 import Plugin
+import Misc
  
 server   = "irc.opera.com"
 port     = 6667
@@ -26,22 +27,21 @@ data Bot = Bot { socket :: Handle, plugins :: API, starttime :: ClockTime }
  
 main :: IO ()
 main = do
-    dontBuffer stdout
+    dontBuffer stdout; dontBuffer stderr
     bracket startup disconnect loop
   where
     startup = do let p = resource
                  t <- getClockTime
                  h <- connect
                  return $ Bot h p t
-    loop st = runReaderT run st --`catch` \(e :: Exception) -> return ()
+    loop st = runReaderT run st `catch` (hPrint stderr :: IOException -> IO ())
 
     connect = notify $ do
         h <- connectTo server (PortNumber (fromIntegral port))
         dontBuffer h
         return h
-      where
-        notify = bracket_ (printf "Connecting to %s ... " server)
-                          (putStrLn "done.")
+    notify = bracket_ (printf "Connecting to %s ... " server)
+                      (putStrLn "done.")
     disconnect = hClose . socket
  
     dontBuffer = flip hSetBuffering NoBuffering
@@ -80,29 +80,37 @@ listen h = forever $ do
 handleMessage src msg ps cp' = case msg of
     "PING"    -> write "PONG" (':':cp)
     "NOTICE"  -> return ()
-    "PRIVMSG" -> maybe (warn ("No-source PRIVMSG: " ++ cp))
-                       (\s -> onPrivMsg s (head ps) cp) src
+    "PRIVMSG" -> onPrivMsg (head ps) (extractAction cp)
     "JOIN"    -> log $ "*** " ++ who ++ " joined " ++ cp
     "MODE"    -> unless (null ps || head ps == who) $
                    log $ "*** " ++ who ++ " sets mode: " ++ ps' ++ " :" ++ cp
-    _         -> unless (length msg == 3 && all isDigit msg) $
+    _         -> unless (threeDigit msg) $
                    warn ("Unknown message: " ++ msg ++ " " ++ ps')
   where
-    srcName = maybe NoName parseName src
-    who     = pretty srcName
-    cp      = maybe "" id cp'
-    ps'     = unwords ps
+    nm  = maybe NoName parseName src
+    who = pretty nm ""
+    cp  = maybe "" id cp'
+    ps' = unwords ps
+
+    extractAction (stripPrefix "\001ACTION " -> Just act)
+                  | not (null act) && last act == '\001' = Action nm (init act)
+    extractAction msg = Message nm msg
+
+    threeDigit t = length t == 3 && all isDigit t
 
 log = io . putStrLn
 
+data Message = Message Name String | Action Name String
+
+instance Pretty Message where
+  pretty (Message nm t) = ('<':) . pretty nm . ("> " ++) . showString t
+  pretty (Action  nm t) = ("* " ++) . pretty nm . (' ':) . showString t
+
 data Name = Name { nickName, userName, fullName :: String } | NoName
 
-class Pretty a where
-  pretty :: a -> String
-
 instance Pretty Name where
-  pretty (Name n _ _) = n
-  pretty NoName       = "<none>"
+  pretty (Name n _ _) = showString n
+  pretty NoName       = showString "<none>"
 
 parseName s = let (nick, rest)  = break (== '!') s
                   (user, rest') = break (== '@') (tail rest)
@@ -110,7 +118,10 @@ parseName s = let (nick, rest)  = break (== '!') s
 
 warn = io . putStrLn
 
-onPrivMsg _ _ text = eval text
+onPrivMsg dest msg = do
+    io $ putStrLn (pretty msg "")
+    case msg of Message _ t@('!':_) -> eval t
+                _                   -> return ()
 
 eval "!uptime"             = uptime >>= privmsg
 eval "!quit"               = do write "QUIT" ":Exiting"
@@ -129,10 +140,11 @@ uptime :: Net String
 uptime = do
     now  <- io getClockTime
     zero <- asks starttime
-    return . pretty $ diffClockTimes now zero
+    let diff = diffClockTimes now zero
+    return $ pretty diff ""
  
 instance Pretty TimeDiff where
-  pretty td = join . intersperse " " . filter (not . null) . map f $
+  pretty td = (++) . join . intersperse " " . filter (not . null) . map f $
       [(years          ,"y") ,(months `mod` 12,"m")
       ,(days   `mod` 28,"d") ,(hours  `mod` 24,"h")
       ,(mins   `mod` 60,"m") ,(secs   `mod` 60,"s")]
