@@ -1,13 +1,12 @@
-{-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE RecordWildCards, ViewPatterns #-}
 
 import Data.Char
 import Data.List
 import Network
 import System.IO
-import System.Time
 import System.Exit
-import Control.Monad.Reader
 import Control.Exception
+import Control.Monad.State
 import Text.Printf
 import Prelude hiding (catch, log)
 import Plugin
@@ -19,22 +18,20 @@ chan     = "#cantide"
 nick     = "canti"
 user     = "nono"
 full     = "Buster Machine No. 7"
- 
--- The 'Net' monad, a wrapper over IO, carrying the bot's immutable state.
--- A socket and the bot's start time.
-type Net = ReaderT Bot IO
-data Bot = Bot { socket :: Handle, plugins :: API, starttime :: ClockTime }
- 
+
+type Net = StateT Bot IO
+data Bot = Bot { socket :: Handle,
+                 plugins :: [Plugin] }
+
 main :: IO ()
 main = do
     dontBuffer stdout; dontBuffer stderr
-    bracket startup disconnect loop
+    bracket setup disconnect loop
   where
-    startup = do let p = resource
-                 t <- getClockTime
-                 h <- connect
-                 return $ Bot h p t
-    loop st = runReaderT run st `catch` (hPrint stderr :: IOException -> IO ())
+    loop st = evalStateT run st `catch` (hPrint stderr :: IOException -> IO ())
+    setup = do ps <- resource
+               h <- connect
+               return $ Bot h ps
 
     connect = notify $ do
         h <- connectTo server (PortNumber (fromIntegral port))
@@ -52,7 +49,7 @@ run = do
     write "NICK" nick
     write "USER" (user ++ " 0 * :" ++ full)
     write "JOIN" chan
-    asks socket >>= listen
+    gets socket >>= listen
  
 listen :: Handle -> Net ()
 listen h = forever $ do
@@ -121,45 +118,27 @@ onPrivMsg dest msg = do
     case msg of Message _ t@('!':_) -> eval t
                 _                   -> return ()
 
-eval "!uptime"             = uptime >>= privmsg
-eval "!quit"               = do write "QUIT" ":Exiting"
-                                io (exitWith ExitSuccess)
+eval "!quit" = do write "QUIT" ":Exiting"
+                  io (exitWith ExitSuccess)
 eval (stripPrefix "!id " -> Just x) = privmsg x
 eval ('!':s) = case words s of
-                 (w:_) -> do cmd <- (lookup w.regCommands) `fmap` asks plugins
-                             let params = stripLeft $ drop (length w) s
-                             maybe (privmsg ("No such command " ++ w ++ "."))
-                                   ((>>= mapM_ respond) . io . ($ params)) cmd
-                 []    -> privmsg "Command expected."
+    (w:_) -> do ps <- gets plugins
+                case foldl (\cs p -> maybe cs (:cs)
+                                     (w `lookup` pluginCommands p)) [] ps of
+                  []  -> privmsg ("No such command " ++ w ++ ".")
+                  [c] -> do let ss = stripLeft $ drop (length w) s
+                            io (c ss) >>= mapM_ respond
+                  cs  -> privmsg ("Ambiguous command.") -- TODO
+    []    -> privmsg "Command expected."
 eval _ = return ()
 
 respond (ChannelMessage t) = privmsg t
 
 privmsg s = write "PRIVMSG" (chan ++ " :" ++ s)
  
-write s t = do h <- asks socket
+write s t = do h <- gets socket
                io $ hPrintf h "%s %s\r\n" s t
- 
-uptime :: Net String
-uptime = do
-    now  <- io getClockTime
-    zero <- asks starttime
-    let diff = diffClockTimes now zero
-    return $ pretty diff ""
- 
-instance Pretty TimeDiff where
-  pretty td = (++) . join . intersperse " " . filter (not . null) . map f $
-      [(years          ,"y") ,(months `mod` 12,"m")
-      ,(days   `mod` 28,"d") ,(hours  `mod` 24,"h")
-      ,(mins   `mod` 60,"m") ,(secs   `mod` 60,"s")]
-    where
-      secs    = abs $ tdSec td  ; mins   = secs   `div` 60
-      hours   = mins   `div` 60 ; days   = hours  `div` 24
-      months  = days   `div` 28 ; years  = months `div` 12
-      f (i,s) | i == 0    = []
-              | otherwise = show i ++ s
- 
-io :: IO a -> Net a
-io = liftIO
 
+io = liftIO :: IO a -> Net a
+ 
 -- vi: set sw=4 ts=4 sts=4 tw=79 ai et nocindent:

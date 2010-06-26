@@ -1,5 +1,6 @@
 module Misc where
 
+import Control.Monad.Trans
 import Data.Char
 
 class Pretty a where
