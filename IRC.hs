@@ -45,53 +45,70 @@ runBot (IrcConfig {..}) ps = bracket setup disconnect loop
                       (putStrLn "done.")
     disconnect = hClose . socket
  
-    go = do write "NICK" ircNick
-            write "USER" (ircUser ++ " 0 * :" ++ ircFullName)
-            write "JOIN" ircChannel
+    go = do write "NICK" [ircNick]
+            write "USER" [ircUser, "0", "*", ircFullName]
+            write "JOIN" [ircChannel]
             gets socket >>= listen
  
 listen :: Handle -> Net ()
 listen h = forever $ do
     (src, s) <- (stripSource . init) `fmap` io (hGetLine h)
-    case parseParams s of
-      (msg:params, colon) -> handleMessage src msg params colon
-      ([],         _)     -> return ()
+    case parseParams s of msg:params -> handleMessage src (msg, params)
+                          []         -> return ()
   where
     stripSource (':':s) = let (src, s') = break (== ' ') s
                           in (Just src, stripLeft s')
     stripSource s       = (Nothing, stripLeft s)
     forever a = a >> forever a
-
-    parseParams :: String -> ([String], Maybe String)
     parseParams = go []
       where
         go ws s = case stripLeft s of
-                    ':':c -> (reverse ws, Just c)
+                    ':':c -> reverse (c:ws)
                     s     -> let (word, rest) = span (/= ' ') s
-                             in if null word then (reverse ws, Nothing)
-                                         else go (word:ws) rest
+                             in if null word then reverse ws
+                                             else go (word:ws) rest
 
 warn = hPutStrLn stderr
 log = putStrLn
 
-write s t = do h <- gets socket
-               io $ hPrintf h "%s %s\r\n" s t
+write :: String -> [String] -> Net ()
+write msg ps = do h <- gets socket
+                  ps' <- io $ joinParams ps
+                  io $ hPrintf h "%s %s\r\n" msg ps'
 
-handleMessage src msg ps cp' = case msg of
-    "PING"    -> write "PONG" (':':cp)
-    "NOTICE"  -> return ()
-    "PRIVMSG" -> onPrivMsg (head ps) (extractAction cp)
-    "JOIN"    -> io $ log $ "*** " ++ who ++ " joined " ++ cp
-    "MODE"    -> unless (null ps || head ps == who) $
-                   io $ log $ "*** " ++ who ++ " sets mode: " ++ ps' ++ " :"
-                                     ++ cp
-    _         -> unless (threeDigit msg) $
-                   io $ warn ("Unknown message: " ++ msg ++ " " ++ ps')
+joinParams [] = return ""
+joinParams ps = go [] ps
+  where
+    go ps [c] = do let c' = case c of ':':_                -> ':':c
+                                      _     | ' ' `elem` c -> ':':c
+                                            | otherwise    -> c
+                   return $ unwords $ reverse (c':ps)
+    go ps (c:cs) = case c of
+      ""                   -> omit "Omitted empty param"
+      ':':p                -> omit $ "Omitted early colon param " ++ p
+      _     | ' ' `elem` c -> omit $ "Space in non-end param '" ++ c ++ "'"
+            | otherwise    -> go (c:ps) cs
+      where
+        omit = (>> go ps cs) . warn
+
+handleMessage src msg = case msg of
+    ("JOIN", [ch])   -> meta $ " joined " ++ ch
+    ("KICK", ch:n:m) -> meta $ " kicked " ++ n ++ " from " ++ ch ++ exitMsg m
+    ("MODE", at:m)   -> unless (at == who) $ meta $ " sets mode: " ++ unwords m
+    ("NICK", new:_)  -> meta $ " changed nick to " ++ new
+    ("PART", ch:ms)  -> meta $ " left " ++ ch ++ exitMsg ms
+    ("NOTICE", m)    -> return ()
+    ("PING", ps)     -> write "PONG" ps
+    ("PRIVMSG", d:m) -> onPrivMsg d (extractAction (lastStr m))
+    ("QUIT", m)      -> meta $ " quit " ++ exitMsg m
+    (t, ps)          -> unless (threeDigit t) $ io $
+                        joinParams (t:ps) >>= warn . ("Unknown message: " ++)
   where
     nm  = maybe NoName parseName src
     who = pretty nm ""
-    cp  = maybe "" id cp'
-    ps' = unwords ps
+    meta = io . log . (("*** " ++ who) ++)
+    exitMsg ss = if null ss then "" else " (" ++ last ss ++ ")"
+    lastStr ss = if null ss then "" else last ss
 
     extractAction (stripPrefix "\001ACTION " -> Just act)
                   | not (null act) && last act == '\001' = Action nm (init act)
@@ -133,6 +150,6 @@ eval ('!':s) = case words s of
 eval _ = return ()
 
 chanMsg s = do nm <- gets chanName
-               lift $ write "PRIVMSG" (nm ++ " :" ++ s)
+               lift $ write "PRIVMSG" [nm, s]
  
 -- vi: set sw=4 ts=4 sts=4 tw=79 ai et nocindent:

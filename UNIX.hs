@@ -18,7 +18,7 @@ unixPlugin = do uptime <- uptime `fmap` getClockTime
       let diff = pretty (diffClockTimes now zero) ""
       chanMsg $ "Uptime: " ++ diff
 
-    quit _ = do lift $ write "QUIT" ":Exiting"
+    quit _ = do lift $ write "QUIT" ["Exiting"]
                 io $ exitWith ExitSuccess
  
 instance Pretty TimeDiff where

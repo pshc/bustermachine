@@ -15,4 +15,7 @@ stripIPrefix _ _ = Nothing
 
 dontBuffer = flip hSetBuffering NoBuffering
 
+maybeDo :: (a -> IO ()) -> Maybe a -> IO ()
+maybeDo = maybe (return ())
+
 -- vi: set sw=4 ts=4 sts=4 tw=79 ai et nocindent:
