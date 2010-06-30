@@ -1,27 +1,25 @@
-module Plugin where
- 
-import Data.List
+module UNIX (unixPlugin) where
+
 import Control.Monad.State
-import System.IO
+import Data.List
+import System.Exit
 import System.Time
 import Misc
+import IRC
 
-data Response = ChannelMessage String
+io = liftIO :: IO a -> Chan a
 
-data Plugin = Plugin {
-    pluginName :: String,
-    pluginCommands :: [(String, String -> IO [Response])]
-}
-
-resource :: IO [Plugin]
-resource = do uptime <- setupUptime
-              return [Plugin "UNIX" [("uptime", uptime)]]
-
-setupUptime = uptime `fmap` getClockTime
+unixPlugin :: IO Plugin
+unixPlugin = do uptime <- uptime `fmap` getClockTime
+                return $ Plugin "UNIX" [("uptime", uptime), ("quit", quit)]
   where
     uptime zero _ = do
-      now <- liftIO getClockTime
-      return [ChannelMessage (pretty (diffClockTimes now zero) "")]
+      now <- io getClockTime
+      let diff = pretty (diffClockTimes now zero) ""
+      chanMsg $ "Uptime: " ++ diff
+
+    quit _ = do lift $ write "QUIT" ":Exiting"
+                io $ exitWith ExitSuccess
  
 instance Pretty TimeDiff where
   pretty td = (++) . join . intersperse " " . filter (not . null) . map f $
