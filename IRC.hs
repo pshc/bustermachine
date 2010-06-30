@@ -92,14 +92,18 @@ joinParams ps = go [] ps
         omit = (>> go ps cs) . warn
 
 handleMessage src msg = case msg of
+    ("AWAY", [])     -> meta $ " is no longer away"
+    ("AWAY", m)      -> meta $ " is away" ++ exitMsg m
+    ("INVITE", _)    -> return ()
     ("JOIN", [ch])   -> meta $ " joined " ++ ch
     ("KICK", ch:n:m) -> meta $ " kicked " ++ n ++ " from " ++ ch ++ exitMsg m
     ("MODE", at:m)   -> unless (at == who) $ meta $ " sets mode: " ++ unwords m
     ("NICK", new:_)  -> meta $ " changed nick to " ++ new
     ("PART", ch:ms)  -> meta $ " left " ++ ch ++ exitMsg ms
-    ("NOTICE", m)    -> return ()
+    ("NOTICE", n:t)  -> io $ log $ "Notice from " ++ n ++ ": " ++ lastStr t
     ("PING", ps)     -> write "PONG" ps
     ("PRIVMSG", d:m) -> onPrivMsg d (extractAction (lastStr m))
+    ("TOPIC", ch:t)  -> meta $ " changed " ++ ch ++ "'s topic to " ++ lastStr t
     ("QUIT", m)      -> meta $ " quit " ++ exitMsg m
     (t, ps)          -> unless (threeDigit t) $ io $
                         joinParams (t:ps) >>= warn . ("Unknown message: " ++)
