@@ -1,5 +1,5 @@
 {-# LANGUAGE FlexibleInstances, RecordWildCards, ViewPatterns #-}
-module IRC (InChan(..), IrcConfig(..), Plugin(..),
+module IRC (InChan(..), IrcConfig(..), Net(..), Plugin(..), ServerMsg(..),
             chanMsg, runBot, write) where
 
 import Data.Char
@@ -27,7 +27,8 @@ data ChannelState = ChannelState { chanName :: Channel }
 
 data Plugin = Plugin {
     pluginName :: String,
-    pluginCommands :: [(String, String -> InChan ())]
+    pluginCommands :: [(String, String -> InChan ())],
+    pluginProcessor :: Maybe ((Name, ServerMsg) -> Net ())
 }
 
 io = liftIO :: IO a -> Net a
@@ -57,7 +58,10 @@ listen h = forever $ do
     (src, s) <- (stripSource . init) `fmap` io (hGetLine h)
     case parseParams s of m:ps -> do let nm = maybe NoName parseName src
                                      ms <- parseMessage (m, ps)
-                                     mapM_ (curry dispatch nm) ms
+                                     plgs <- gets plugins
+                                     forM_ ms $ \msg -> do
+                                       mapM_ (runProcessor (nm, msg)) plgs
+                                       dispatch (nm, msg)
                           []   -> return ()
   where
     stripSource (':':s) = let (src, s') = break (== ' ') s
@@ -71,6 +75,8 @@ listen h = forever $ do
                     s     -> let (word, rest) = span (/= ' ') s
                              in if null word then reverse ws
                                              else go (word:ws) rest
+
+    runProcessor msg (Plugin {..}) = maybe (return ()) ($ msg) pluginProcessor
 
 warn = hPutStrLn stderr
 log = putStrLn
@@ -175,12 +181,8 @@ parseName s = let (nick, rest)  = break (== '!') s
 
 dispatch :: (Name, ServerMsg) -> Net ()
 dispatch msg = case snd msg of
-    Chanmsg ch m -> do
-      io $ putStrLn (pretty msg "")
-      case m of ChatMsg t@('!':_) -> eval t `evalStateT` ChannelState ch
-                _                 -> return ()
-    Notice _ _   -> io $ putStrLn (pretty msg "")
-    _            -> return ()
+    Chanmsg ch (ChatMsg t@('!':_)) -> eval t `evalStateT` ChannelState ch
+    _                              -> return ()
 
 eval :: String -> InChan ()
 eval ('!':s) = case words s of

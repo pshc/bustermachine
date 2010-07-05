@@ -1,6 +1,7 @@
 
 import System.IO
 import IRC
+import Logging
 import Misc
 import UNIX
 
@@ -16,6 +17,7 @@ config = IrcConfig {
 main = do
     dontBuffer stdout; dontBuffer stderr
     unix <- unixPlugin
-    runBot config [unix]
+    logging <- loggingPlugin
+    runBot config [unix, logging]
 
 -- vi: set sw=4 ts=4 sts=4 tw=79 ai et nocindent:
