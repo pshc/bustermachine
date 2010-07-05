@@ -1,5 +1,6 @@
-{-# LANGUAGE RecordWildCards, ViewPatterns #-}
-module IRC (Chan(..), IrcConfig(..), Plugin(..), chanMsg, runBot, write) where
+{-# LANGUAGE FlexibleInstances, RecordWildCards, ViewPatterns #-}
+module IRC (InChan(..), IrcConfig(..), Plugin(..),
+            chanMsg, runBot, write) where
 
 import Data.Char
 import Data.List
@@ -20,12 +21,13 @@ type Net = StateT Bot IO
 data Bot = Bot { socket :: Handle,
                  plugins :: [Plugin] }
 
-type Chan = StateT Channel Net
-data Channel = Channel { chanName :: String }
+type Channel = String
+type InChan = StateT ChannelState Net
+data ChannelState = ChannelState { chanName :: Channel }
 
 data Plugin = Plugin {
     pluginName :: String,
-    pluginCommands :: [(String, String -> Chan ())]
+    pluginCommands :: [(String, String -> InChan ())]
 }
 
 io = liftIO :: IO a -> Net a
@@ -53,8 +55,10 @@ runBot (IrcConfig {..}) ps = bracket setup disconnect loop
 listen :: Handle -> Net ()
 listen h = forever $ do
     (src, s) <- (stripSource . init) `fmap` io (hGetLine h)
-    case parseParams s of msg:params -> handleMessage src (msg, params)
-                          []         -> return ()
+    case parseParams s of m:ps -> do let nm = maybe NoName parseName src
+                                     ms <- parseMessage (m, ps)
+                                     mapM_ (curry dispatch nm) ms
+                          []   -> return ()
   where
     stripSource (':':s) = let (src, s') = break (== ' ') s
                           in (Just src, stripLeft s')
@@ -91,40 +95,73 @@ joinParams ps = go [] ps
       where
         omit = (>> go ps cs) . warn
 
-handleMessage src msg = case msg of
-    ("AWAY", [])     -> meta $ " is no longer away"
-    ("AWAY", m)      -> meta $ " is away" ++ exitMsg m
-    ("INVITE", _)    -> return ()
-    ("JOIN", [ch])   -> meta $ " joined " ++ ch
-    ("KICK", ch:n:m) -> meta $ " kicked " ++ n ++ " from " ++ ch ++ exitMsg m
-    ("MODE", at:m)   -> unless (at == who) $ meta $ " sets mode: " ++ unwords m
-    ("NICK", new:_)  -> meta $ " changed nick to " ++ new
-    ("PART", ch:ms)  -> meta $ " left " ++ ch ++ exitMsg ms
-    ("NOTICE", n:t)  -> io $ log $ "Notice from " ++ n ++ ": " ++ lastStr t
-    ("PING", ps)     -> write "PONG" ps
-    ("PRIVMSG", d:m) -> onPrivMsg d (extractAction (lastStr m))
-    ("TOPIC", ch:t)  -> meta $ " changed " ++ ch ++ "'s topic to " ++ lastStr t
-    ("QUIT", m)      -> meta $ " quit " ++ exitMsg m
-    (t, ps)          -> unless (threeDigit t) $ io $
-                        joinParams (t:ps) >>= warn . ("Unknown message: " ++)
+type Nick = String
+instance Pretty (Name, ServerMsg) where
+  pretty (nm, msg) = case msg of
+    Away m      -> who . maybe (s "is no longer away")
+                               (\awayMsg -> s "is away" . paren awayMsg) m
+    Invite ch   -> who . s "invited you to " . s ch
+    Join ch     -> who . s "joined " . s ch
+    Kick ch n m -> who . s "kicked " . s n . s " from " . s ch . maybeParen m
+    Mode ch ms  -> who . foldl concatWords (s "sets mode:") ms
+    Nick n      -> who . s "changed nick to " . s n
+    Part ch m   -> who . s "left " . s ch . maybeParen m
+    Notice n m  -> s "Notice from " . s n . s ": " . s m
+    Privmsg m   -> s "(PM) " . pretty (nm, m)
+    Chanmsg _ m -> pretty (nm, m)
+    Topic ch m  -> who . s "changed " . s ch . s "'s topic to " . s m
+    Quit m      -> s " quit" . paren m
+   where
+    s               = showString
+    who             = pretty nm . s " "
+    paren m         = s " (" . s m . s ")"
+    maybeParen      = maybe id paren
+    concatWords f m = f . (' ':) . s m
+
+data ServerMsg = Away (Maybe String) | Invite Channel | Join Channel
+                 | Kick Channel Nick (Maybe String) | Mode Channel [String]
+                 | Nick Nick | Part Channel (Maybe String) | Notice Nick String
+                 | Privmsg ChatMsg | Chanmsg Channel ChatMsg
+                 | Topic Channel String | Quit String
+
+parseMessage :: (String, [String]) -> Net [ServerMsg]
+parseMessage msg = case msg of
+    ("AWAY", [])       -> return [Away Nothing]
+    ("AWAY", [m])      -> return [Away (Just m)]
+    ("INVITE", [ch])   -> return [Invite ch]
+    ("JOIN", [ch])     -> return [Join ch]
+    ("KICK", [c,n])    -> return [Kick c n Nothing]
+    ("KICK", [c,n,m])  -> return [Kick c n (Just m)]
+    ("MODE", ch:ms)    -> return $ if isChan ch then [Mode ch ms] else []
+    ("NICK", [n])      -> return [Nick n]
+    ("PART", [ch])     -> return [Part ch Nothing]
+    ("PART", [ch,m])   -> return [Part ch (Just m)]
+    ("NOTICE", [n,t])  -> return [Notice n t]
+    ("PING", ps)       -> write "PONG" ps >> return []
+    ("PRIVMSG", [d,m]) -> do let a = extractAction m
+                             return [if isChan d then Chanmsg d a
+                                                 else Privmsg a]
+    ("TOPIC", [ch,t])  -> return [Topic ch t]
+    ("QUIT", [m])      -> return [Quit m]
+    (t, ps)            -> do unless (threeDigit t) $ io $ do
+                               ps' <- joinParams (t:ps)
+                               warn $ "Unknown message: " ++ ps'
+                             return []
   where
-    nm  = maybe NoName parseName src
-    who = pretty nm ""
-    meta = io . log . (("*** " ++ who) ++)
-    exitMsg ss = if null ss then "" else " (" ++ last ss ++ ")"
-    lastStr ss = if null ss then "" else last ss
+    isChan (x:_) = (x == '#' || x == '&')
+    isChan _     = False
 
     extractAction (stripPrefix "\001ACTION " -> Just act)
-                  | not (null act) && last act == '\001' = Action nm (init act)
-    extractAction msg = Message nm msg
+                  | not (null act) && last act == '\001' = Action (init act)
+    extractAction msg = ChatMsg msg
 
     threeDigit t = length t == 3 && all isDigit t
 
-data Message = Message Name String | Action Name String
+data ChatMsg = ChatMsg String | Action String
 
-instance Pretty Message where
-  pretty (Message nm t) = ('<':) . pretty nm . ("> " ++) . showString t
-  pretty (Action  nm t) = ("* " ++) . pretty nm . (' ':) . showString t
+instance Pretty (Name, ChatMsg) where
+  pretty (nm, ChatMsg t) = ('<':) . pretty nm . ("> " ++) . showString t
+  pretty (nm, Action t)  = ("* " ++) . pretty nm . (' ':) . showString t
 
 data Name = Name { nickName, userName, fullName :: String } | NoName
 
@@ -136,12 +173,16 @@ parseName s = let (nick, rest)  = break (== '!') s
                   (user, rest') = break (== '@') (tail rest)
               in Name nick user (tail rest')
 
-onPrivMsg dest msg = do
-    io $ putStrLn (pretty msg "")
-    case msg of Message _ t@('!':_) -> evalStateT (eval t) (Channel dest)
-                _                   -> return ()
+dispatch :: (Name, ServerMsg) -> Net ()
+dispatch msg = case snd msg of
+    Chanmsg ch m -> do
+      io $ putStrLn (pretty msg "")
+      case m of ChatMsg t@('!':_) -> eval t `evalStateT` ChannelState ch
+                _                 -> return ()
+    Notice _ _   -> io $ putStrLn (pretty msg "")
+    _            -> return ()
 
-eval :: String -> Chan ()
+eval :: String -> InChan ()
 eval ('!':s) = case words s of
     (w:_) -> do ps <- lift $ gets plugins
                 case foldl (collectCommands w) [] ps of

@@ -7,7 +7,7 @@ import System.Time
 import Misc
 import IRC
 
-io = liftIO :: IO a -> Chan a
+io = liftIO :: IO a -> InChan a
 
 unixPlugin :: IO Plugin
 unixPlugin = do uptime <- uptime `fmap` getClockTime
