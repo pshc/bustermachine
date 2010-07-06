@@ -1,18 +1,17 @@
-module UNIX (unixPlugin) where
+module Buster.Machine.UNIX (plugin) where
 
+import Buster.IRC
+import Buster.Misc
 import Control.Monad.State
 import Data.List
 import System.Exit
 import System.Time
-import Misc
-import IRC
 
 io = liftIO :: IO a -> InChan a
 
-unixPlugin :: IO Plugin
-unixPlugin = do uptime <- uptime `fmap` getClockTime
-                return $ Plugin "UNIX" [("uptime", uptime), ("quit", quit)]
-                                Nothing
+plugin = makePlugin $ do
+    uptime <- uptime `fmap` getClockTime
+    return $ Plugin "UNIX" [("uptime", uptime), ("quit", quit)] Nothing
   where
     uptime zero _ = do
       now <- io getClockTime

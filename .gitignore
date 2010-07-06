@@ -1,4 +1,7 @@
 *.hi
 *.o
 *.swp
-bm
+nono
+dist
+.dist
+.dist-install

@@ -1,16 +1,21 @@
-{-# LANGUAGE FlexibleInstances, RecordWildCards, ViewPatterns #-}
-module IRC (InChan(..), IrcConfig(..), Net(..), Plugin(..), ServerMsg(..),
-            chanMsg, runBot, write) where
+{-# LANGUAGE DeriveDataTypeable, FlexibleInstances, RecordWildCards,
+             ViewPatterns #-}
+module Buster.IRC (InChan(..), IrcConfig(..), Net(..), Plugin(..),
+                   ServerMsg(..), chanMsg, makePlugin, runBot, withPlugin,
+                   write) where
 
-import Data.Char
-import Data.List
-import Network
-import System.IO
+import Buster.Misc
 import Control.Exception
 import Control.Monad.State
+import Data.Char
+import Data.Dynamic
+import Data.List
+import Data.Typeable
+import Network
+import System.IO
+import System.Plugins
 import Text.Printf
 import Prelude hiding (catch, log)
-import Misc
  
 data IrcConfig = IrcConfig {
   ircServer, ircChannel, ircNick, ircUser, ircFullName :: String,
@@ -29,7 +34,7 @@ data Plugin = Plugin {
     pluginName :: String,
     pluginCommands :: [(String, String -> InChan ())],
     pluginProcessor :: Maybe ((Name, ServerMsg) -> Net ())
-}
+} deriving Typeable
 
 io = liftIO :: IO a -> Net a
 
@@ -119,7 +124,7 @@ instance Pretty (Name, ServerMsg) where
     Quit m      -> s " quit" . paren m
    where
     s               = showString
-    who             = pretty nm . s " "
+    who             = s "*** " . pretty nm . s " "
     paren m         = s " (" . s m . s ")"
     maybeParen      = maybe id paren
     concatWords f m = f . (' ':) . s m
@@ -198,5 +203,13 @@ eval _ = return ()
 
 chanMsg s = do nm <- gets chanName
                lift $ write "PRIVMSG" [nm, s]
+
+withPlugin :: String -> String -> (Plugin -> IO ()) -> IO ()
+withPlugin lib mod cont = do
+    loaded <- loadDynamic (lib, "Buster.Machine." ++ mod, "plugin")
+    maybe (hPutStrLn stderr $ "Couldn't load " ++ mod ++ " from " ++ lib)
+          (>>= cont) (loaded >>= fromDynamic)
+
+makePlugin = toDyn :: IO Plugin -> Dynamic
  
 -- vi: set sw=4 ts=4 sts=4 tw=79 ai et nocindent:

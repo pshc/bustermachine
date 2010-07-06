@@ -1,9 +1,7 @@
 
+import Buster.IRC
+import Buster.Misc
 import System.IO
-import IRC
-import Logging
-import Misc
-import UNIX
 
 config = IrcConfig {
   ircServer   = "irc.opera.com",
@@ -16,8 +14,9 @@ config = IrcConfig {
 
 main = do
     dontBuffer stdout; dontBuffer stderr
-    unix <- unixPlugin
-    logging <- loggingPlugin
-    runBot config [unix, logging]
+    let lib = "bustermachine-0.1"
+    withPlugin lib "UNIX" $ \unix ->
+      withPlugin lib "Logging" $ \logging ->
+        runBot config [unix, logging]
 
 -- vi: set sw=4 ts=4 sts=4 tw=79 ai et nocindent:

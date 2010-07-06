@@ -1,4 +1,4 @@
-module Misc where
+module Buster.Misc where
 
 import Data.Char
 import System.IO
