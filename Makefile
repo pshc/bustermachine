@@ -1,4 +1,4 @@
-TARGET = nono
+TARGET = bm
 TARGET_SRC := $(wildcard Nono/*.hs)
 DIST_SRC := $(wildcard Buster/*.hs) $(wildcard Buster/Machine/*.hs)
 MAKE = make --no-print-directory
@@ -9,8 +9,8 @@ run: $(TARGET)
 	./$<
 
 $(TARGET): .dist-install $(TARGET_SRC)
-	@$(MAKE) -C Nono $@
-	@ln -sf Nono/$@
+	@$(MAKE) -C Nono nono
+	@ln -sf Nono/nono $@
 
 .dist: configure $(DIST_SRC)
 	./Setup.lhs build
