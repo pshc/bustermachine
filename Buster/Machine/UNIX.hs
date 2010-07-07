@@ -11,7 +11,7 @@ io = liftIO :: IO a -> InChan a
 
 plugin = makePlugin $ do
     uptime <- uptime `fmap` getCurrentTime
-    return $ Plugin [("uptime", uptime), ("quit", quit)] Nothing
+    return $ commandPlugin [("uptime", uptime), ("quit", quit)]
   where
     uptime zero _ = do
       now <- io getCurrentTime

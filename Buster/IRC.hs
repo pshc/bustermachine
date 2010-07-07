@@ -1,8 +1,9 @@
 {-# LANGUAGE DeriveDataTypeable, FlexibleInstances, RecordWildCards,
              ViewPatterns #-}
-module Buster.IRC (Bot(..), InChan, IrcConfig(..), Net, Plugin(..),
-                   ServerMsg(..), chanMsg, makePlugin, runBot, withPlugin,
-                   write) where
+module Buster.IRC (Bot(..), InChan, IrcConfig(..), Net, ServerMsg(..),
+                   chanMsg, runBot, write,
+                   commandPlugin, processorPlugin,
+                   makePlugin, withPlugin) where
 
 import Buster.Misc
 import Control.Exception
@@ -39,9 +40,12 @@ type Channel = String
 type InChan = ReaderT Channel Net
 
 data Plugin = Plugin {
-    pluginCommands :: [(String, String -> InChan ())],
+    pluginCommands :: Map String (String -> InChan ()),
     pluginProcessor :: Maybe ((Name, ServerMsg) -> Net ())
 } deriving Typeable
+
+commandPlugin cmds = Plugin (Map.fromList cmds) Nothing
+processorPlugin p  = Plugin (Map.empty) (Just p)
 
 io = liftIO :: IO a -> Net a
 
@@ -213,7 +217,7 @@ eval ('!':s) = case words s of
                   cs  -> chanMsg ("Ambiguous command " ++ w ++ ".") -- TODO
     []    -> chanMsg "Command expected."
   where
-    collectCommands w p cs = maybe cs (:cs) (w `lookup` pluginCommands p)
+    collectCommands w p cs = maybe cs (:cs) (w `Map.lookup` pluginCommands p)
 eval _ = return ()
 
 chanMsg s = do nm <- ask
