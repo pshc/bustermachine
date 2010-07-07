@@ -9,7 +9,7 @@ import System.Locale
 
 io = liftIO :: IO a -> Net a
 
-plugin = makePlugin $ return $ Plugin "Logging" [] (Just logger)
+plugin = makePlugin $ return $ Plugin [] (Just logger)
  
 logger msg = gets channels >>= io . mapM_ go . Map.keys
   where
