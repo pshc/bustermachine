@@ -1,6 +1,6 @@
 {-# LANGUAGE DeriveDataTypeable, FlexibleInstances, RecordWildCards,
              ViewPatterns #-}
-module Buster.IRC (InChan(..), IrcConfig(..), Net(..), Plugin(..),
+module Buster.IRC (Bot(..), InChan, IrcConfig(..), Net, Plugin(..),
                    ServerMsg(..), chanMsg, makePlugin, runBot, withPlugin,
                    write) where
 
@@ -10,6 +10,8 @@ import Control.Monad.State
 import Data.Char
 import Data.Dynamic
 import Data.List
+import Data.Map (Map)
+import qualified Data.Map as Map
 import Data.Typeable
 import Network
 import System.IO
@@ -24,11 +26,16 @@ data IrcConfig = IrcConfig {
 
 type Net = StateT Bot IO
 data Bot = Bot { socket :: Handle,
-                 plugins :: [Plugin] }
+                 plugins :: [Plugin],
+                 channels :: Map Channel ChannelState }
+data ChannelState = ChannelState { chanTopic :: Maybe String }
+
+initialChan = ChannelState Nothing
+alterChan f ch = do bot <- get
+                    put $ bot { channels = Map.alter f ch (channels bot) }
 
 type Channel = String
-type InChan = StateT ChannelState Net
-data ChannelState = ChannelState { chanName :: Channel }
+type InChan = StateT Channel Net
 
 data Plugin = Plugin {
     pluginName :: String,
@@ -43,7 +50,7 @@ runBot (IrcConfig {..}) ps = bracket setup disconnect loop
   where
     loop st = evalStateT go st `catch` (hPrint stderr :: IOException -> IO ())
     setup = do h <- connect
-               return $ Bot h ps
+               return $ Bot h ps Map.empty
 
     connect = notify $ do
         h <- connectTo ircServer (PortNumber (fromIntegral ircPort))
@@ -154,10 +161,10 @@ parseMessage msg = case msg of
                                                  else Privmsg a]
     ("TOPIC", [ch,t])  -> return [Topic ch t]
     ("QUIT", [m])      -> return [Quit m]
-    (t, ps)            -> do unless (threeDigit t) $ io $ do
-                               ps' <- joinParams (t:ps)
-                               warn $ "Unknown message: " ++ ps'
-                             return []
+    (t, ps) | threeDigit t -> numCode (read t, ps) >> return []
+            | otherwise    -> io $ do ps' <- joinParams (t:ps)
+                                      warn $ "Unknown message: " ++ ps'
+                                      return []
   where
     isChan (x:_) = (x == '#' || x == '&')
     isChan _     = False
@@ -167,6 +174,14 @@ parseMessage msg = case msg of
     extractAction msg = ChatMsg msg
 
     threeDigit t = length t == 3 && all isDigit t
+
+numCode msg = case msg of
+    (331, ch:_)   -> setTopic Nothing `alterChan` ch
+    (332, [ch,t]) -> setTopic (Just t) `alterChan` ch
+    _             -> return ()
+  where
+    setTopic t = Just . maybe (initialChan { chanTopic = t })
+                              (\c -> c { chanTopic = t })
 
 data ChatMsg = ChatMsg String | Action String
 
@@ -186,7 +201,7 @@ parseName s = let (nick, rest)  = break (== '!') s
 
 dispatch :: (Name, ServerMsg) -> Net ()
 dispatch msg = case snd msg of
-    Chanmsg ch (ChatMsg t@('!':_)) -> eval t `evalStateT` ChannelState ch
+    Chanmsg ch (ChatMsg t@('!':_)) -> eval t `evalStateT` ch
     _                              -> return ()
 
 eval :: String -> InChan ()
@@ -201,7 +216,7 @@ eval ('!':s) = case words s of
     collectCommands w cs p = maybe cs (:cs) (w `lookup` pluginCommands p)
 eval _ = return ()
 
-chanMsg s = do nm <- gets chanName
+chanMsg s = do nm <- get
                lift $ write "PRIVMSG" [nm, s]
 
 withPlugin :: String -> String -> (Plugin -> IO ()) -> IO ()

@@ -4,6 +4,6 @@ description: IRC bot and plugins
 license: MIT
 homepage: http://github.com/pshc/bustermachine
 build-type: Simple
-build-depends: base, direct-plugins, mtl, network, old-locale, time
+build-depends: base, containers, direct-plugins, mtl, network, old-locale, time
 exposed-modules: Buster.IRC, Buster.Misc,
                  Buster.Machine.Logging, Buster.Machine.UNIX
