@@ -6,6 +6,7 @@ module Buster.IRC (Bot(..), InChan, IrcConfig(..), Net, Plugin(..),
 
 import Buster.Misc
 import Control.Exception
+import Control.Monad.Reader
 import Control.Monad.State
 import Data.Char
 import Data.Dynamic
@@ -35,7 +36,7 @@ alterChan f ch = do bot <- get
                     put $ bot { channels = Map.alter f ch (channels bot) }
 
 type Channel = String
-type InChan = StateT Channel Net
+type InChan = ReaderT Channel Net
 
 data Plugin = Plugin {
     pluginName :: String,
@@ -201,7 +202,7 @@ parseName s = let (nick, rest)  = break (== '!') s
 
 dispatch :: (Name, ServerMsg) -> Net ()
 dispatch msg = case snd msg of
-    Chanmsg ch (ChatMsg t@('!':_)) -> eval t `evalStateT` ch
+    Chanmsg ch (ChatMsg t@('!':_)) -> eval t `runReaderT` ch
     _                              -> return ()
 
 eval :: String -> InChan ()
@@ -216,7 +217,7 @@ eval ('!':s) = case words s of
     collectCommands w cs p = maybe cs (:cs) (w `lookup` pluginCommands p)
 eval _ = return ()
 
-chanMsg s = do nm <- get
+chanMsg s = do nm <- ask
                lift $ write "PRIVMSG" [nm, s]
 
 withPlugin :: String -> String -> (Plugin -> IO ()) -> IO ()
