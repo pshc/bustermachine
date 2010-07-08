@@ -8,15 +8,13 @@ all: $(TARGET)
 run: $(TARGET)
 	./$<
 
-$(TARGET): .dist-install $(TARGET_SRC)
+$(TARGET): .dist $(TARGET_SRC)
+	@rm Nono/nono
 	@$(MAKE) -C Nono nono
 	@ln -sf Nono/nono $@
 
 .dist: configure $(DIST_SRC)
 	./Setup.lhs build
-	@touch $@
-
-.dist-install: .dist
 	./Setup.lhs install
 	@touch $@
 
@@ -28,6 +26,6 @@ configure: bustermachine.cabal
 clean:
 	./Setup.lhs clean
 	@$(MAKE) -C Nono clean
-	rm -f -- .dist .dist-install $(TARGET)
+	rm -f -- .dist $(TARGET)
 
 .PHONY: all clean run
