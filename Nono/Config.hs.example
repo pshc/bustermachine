@@ -1,0 +1,8 @@
+module Config where
+
+config = (`lookup` [
+  ("server", "irc.opera.com"),
+  ("nick", "buster"),
+  ("channel", "#buster"),
+  ("NickServPassword", "X")
+])

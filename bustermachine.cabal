@@ -6,4 +6,5 @@ homepage: http://github.com/pshc/bustermachine
 build-type: Simple
 build-depends: base, containers, direct-plugins, mtl, network, old-locale, time
 exposed-modules: Buster.IRC, Buster.Message, Buster.Misc, Buster.Plugin,
-                 Buster.Machine.Logging, Buster.Machine.UNIX
+                 Buster.Machine.Identity, Buster.Machine.Logging,
+                 Buster.Machine.UNIX

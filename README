@@ -1,3 +1,7 @@
+INSTALLATION
+============
+
+cp Nono/Config.hs.example Nono/Config.hs
 ./configure
 make
 ./bm

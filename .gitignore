@@ -2,7 +2,6 @@
 *.o
 *.swp
 bm
-Nono/nono
 dist
 .dist
 .dist-install

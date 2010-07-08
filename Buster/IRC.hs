@@ -1,6 +1,6 @@
 {-# LANGUAGE RecordWildCards, ViewPatterns #-}
-module Buster.IRC (MessageProcessor, Net, Bot(..), IrcConfig(..),
-                   runBot, write) where
+module Buster.IRC (Config, MessageProcessor, Net, Bot(..),
+                   getConfig, requiredConfig, runBot, write) where
 
 import Buster.Message
 import Buster.Misc
@@ -15,18 +15,24 @@ import System.IO
 import Text.Printf
 import Prelude hiding (catch, log)
  
-data IrcConfig = IrcConfig {
-  ircServer, ircChannel, ircNick, ircUser, ircFullName :: String,
-  ircPort :: Int
-}
-
 type Net = StateT Bot IO
 data Bot = Bot { socket :: Handle,
+                 botConfig :: Config,
                  processor :: MessageProcessor,
                  channels :: Map Channel ChannelState }
 
 type MessageProcessor = (Name, ServerMsg) -> Net ()
 data ChannelState = ChannelState { chanTopic :: Maybe String }
+
+type Config = String -> Maybe String
+
+getConfig :: String -> Net (Maybe String)
+getConfig = (`fmap` gets botConfig) . flip ($)
+
+requiredConfig :: String -> Net String
+requiredConfig s = do val <- ($ s) `fmap` gets botConfig
+                      maybe (error $ "Config value '" ++ s ++ "' required")
+                            return val
 
 initialChan = ChannelState Nothing
 alterChan f ch = do bot <- get
@@ -34,24 +40,27 @@ alterChan f ch = do bot <- get
 
 io = liftIO :: IO a -> Net a
 
-runBot :: IrcConfig -> MessageProcessor -> IO ()
-runBot (IrcConfig {..}) mp = bracket setup disconnect loop
+runBot :: Config -> MessageProcessor -> IO ()
+runBot cfg mp = bracket setup disconnect loop
   where
     loop st = evalStateT go st `catch` (hPrint stderr :: IOException -> IO ())
     setup = do h <- connect
-               return $ Bot h mp Map.empty
-
+               return $ Bot h cfg mp Map.empty
+    config s = maybe (error $ "Need config value for " ++ s) id (cfg s)
+    server   = config "server"
     connect = notify $ do
-        h <- connectTo ircServer (PortNumber (fromIntegral ircPort))
+        let port = PortNumber $ fromIntegral $ maybe 6667 read $ cfg "port"
+        h <- connectTo server port
         dontBuffer h
         return h
-    notify = bracket_ (printf "Connecting to %s ... " ircServer)
+    notify = bracket_ (printf "Connecting to %s ... " server)
                       (putStrLn "done.")
     disconnect = hClose . socket
  
-    go = do write "NICK" [ircNick]
-            write "USER" [ircUser, "0", "*", ircFullName]
-            write "JOIN" [ircChannel]
+    go = do write "NICK" [config "nick"]
+            write "USER" [maybe (config "nick") id $ cfg "user",
+                          "0", "*", maybe "" id $ cfg "fullName"]
+            write "JOIN" [config "channel"]
             gets socket >>= listen
  
 listen :: Handle -> Net ()
