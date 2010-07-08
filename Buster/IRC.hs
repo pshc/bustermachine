@@ -19,7 +19,7 @@ type Net = StateT Bot IO
 data Bot = Bot { socket :: Handle,
                  botConfig :: Config,
                  processor :: MessageProcessor,
-                 channels :: Map Channel ChannelState }
+                 channels :: Map Chan ChannelState }
 
 type MessageProcessor = (Name, ServerMsg) -> Net ()
 data ChannelState = ChannelState { chanTopic :: Maybe String,
@@ -113,24 +113,22 @@ parseName s = let (nick, rest)  = break (== '!') s
                   (user, rest') = break (== '@') (tail rest)
               in Name nick user (tail rest')
 
-parseMessage :: (String, [String]) -> Net [ServerMsg]
 parseMessage msg = case msg of
     ("AWAY", [])       -> return [Away Nothing]
     ("AWAY", [m])      -> return [Away (Just m)]
-    ("INVITE", [ch])   -> return [Invite ch]
-    ("JOIN", [ch])     -> return [Join ch]
-    ("KICK", [c,n])    -> return [Kick c n Nothing]
-    ("KICK", [c,n,m])  -> return [Kick c n (Just m)]
-    ("MODE", ch:ms)    -> return $ if isChan ch then [Mode ch ms] else []
-    ("NICK", [n])      -> return [Nick n]
-    ("PART", [ch])     -> return [Part ch Nothing]
-    ("PART", [ch,m])   -> return [Part ch (Just m)]
-    ("NOTICE", [n,t])  -> return [Notice n t]
+    ("INVITE", [ch])   -> return [Invite (parseChan ch)]
+    ("JOIN", [ch])     -> return [Join (parseChan ch)]
+    ("KICK", [ch,n])   -> return [Kick (parseChan ch) n Nothing]
+    ("KICK", [ch,n,m]) -> return [Kick (parseChan ch) n (Just m)]
+    ("MODE", ch:ms)    -> return $ if isChan ch then [Mode (parseChan ch) ms]
+                                                else []
+    ("NICK", [n])      -> return [NickChange n]
+    ("PART", [ch])     -> return [Part (parseChan ch) Nothing]
+    ("PART", [ch,m])   -> return [Part (parseChan ch) (Just m)]
+    ("NOTICE", [ch,m]) -> return [Notice (parseTarget ch) m]
     ("PING", ps)       -> write "PONG" ps >> return []
-    ("PRIVMSG", [d,m]) -> do let a = extractAction m
-                             return [if isChan d then Chanmsg d a
-                                                 else Privmsg a]
-    ("TOPIC", [ch,t])  -> return [Topic ch t]
+    ("PRIVMSG", [d,m]) -> return [PrivMsg (parseTarget d) (extractAction m)]
+    ("TOPIC", [ch,t])  -> return [Topic (parseChan ch) t]
     ("QUIT", [m])      -> return [Quit m]
     (t, ps) | threeDigit t -> numCode (read t, ps) >> return []
             | otherwise    -> io $ do ps' <- joinParams (t:ps)
@@ -139,15 +137,23 @@ parseMessage msg = case msg of
   where
     extractAction (stripPrefix "\001ACTION " -> Just act)
                   | not (null act) && last act == '\001' = Action (init act)
-    extractAction msg = ChatMsg msg
+    extractAction msg = Chat msg
 
     threeDigit t = length t == 3 && all isDigit t
 
+parseChan ('#':ch) = (:#) ch
+parseChan ('&':ch) = (:&) ch
+parseChan ('+':ch) = (:+) ch
+parseChan ch       = (:#) ch
+
+parseTarget t | isChan t  = Chan (parseChan t)
+              | otherwise = Nick t
+
 numCode msg = case msg of
-    (331, ch:_)   -> setTopic Nothing `alterChan` ch
-    (332, [ch,t]) -> setTopic (Just t) `alterChan` ch
+    (331, ch:_)   -> setTopic Nothing `alterChan` parseChan ch
+    (332, [ch,t]) -> setTopic (Just t) `alterChan` parseChan ch
     (353, nms)    -> case dropWhile (not . isChan) nms of
-                       ch:nms' | isChan ch -> setNames nms' `alterChan` ch
+                       ch:nms' -> setNames nms' `alterChan` parseChan ch
                        _ -> io $ warn $ "Bad NAMES message: " ++ unwords nms
     _             -> return ()
   where

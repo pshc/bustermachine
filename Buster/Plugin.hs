@@ -19,7 +19,7 @@ data Plugin = Plugin {
     pluginProcessor :: Maybe MessageProcessor
 } deriving Typeable
 
-type InChan = ReaderT Channel Net
+type InChan = ReaderT Chan Net
 
 commandPlugin cmds = Plugin (Map.fromList cmds) Nothing
 processorPlugin p  = Plugin (Map.empty) (Just p)
@@ -28,8 +28,8 @@ dispatchPlugins :: [(String, Plugin)] -> MessageProcessor
 dispatchPlugins ps msg = do
     mapM_ ($ msg) processors
     case snd msg of
-      Chanmsg ch (ChatMsg t@('!':_)) -> eval pluginMap t `runReaderT` ch
-      _                              -> return ()
+      PrivMsg (Chan ch) (Chat t@('!':_)) -> eval pluginMap t `runReaderT` ch
+      _                                  -> return ()
   where
     processors = [pp | (_, Plugin { pluginProcessor = Just pp }) <- ps]
     pluginMap  = Map.fromList ps
@@ -56,6 +56,6 @@ withPlugins lib names cont = load names []
 makePlugin = toDyn :: IO Plugin -> Dynamic
 
 chanMsg s = do nm <- ask
-               lift $ write "PRIVMSG" [nm, s]
+               lift $ write "PRIVMSG" [pretty nm "", s]
 
  -- vi: set sw=4 ts=4 sts=4 tw=79 ai et nocindent:

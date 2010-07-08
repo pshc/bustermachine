@@ -15,7 +15,7 @@ stripIPrefix _ _ = Nothing
 
 dontBuffer = flip hSetBuffering NoBuffering
 
-isChan (x:_) = (x == '#' || x == '&')
+isChan (x:_) = (x == '#' || x == '&' || x == '+')
 isChan _     = False
 
 -- vi: set sw=4 ts=4 sts=4 tw=79 ai et nocindent:

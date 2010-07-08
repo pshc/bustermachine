@@ -21,7 +21,8 @@ plugin = makePlugin $ do
 logger msg = gets channels >>= io . mapM_ go . Map.keys
   where
     go ch = do time <- getZonedTime
-               let filename = dir ++ "/" ++ ch ++ "." ++ dateStr time ++ ".log"
+               let filename = dir ++ "/" ++ pretty ch ""
+                              ++ "." ++ dateStr time ++ ".log"
                h <- openFile filename AppendMode
                hPutStrLn h $ pretty time . ("  " ++) . pretty msg $ ""
                hFlush h

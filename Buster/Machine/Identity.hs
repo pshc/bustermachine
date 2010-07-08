@@ -10,7 +10,7 @@ io = liftIO :: IO a -> Net a
 
 plugin = makePlugin $ return $ processorPlugin noticer
 
-noticer (Name "NickServ" _ _, Notice _ m)
+noticer (Name "NickServ" _ _, Notice (Nick _) m)
   | "/msg NickServ IDENTIFY" `isInfixOf` m = do
     pass <- getConfig "NickServPassword"
     case pass of Just pass -> write "PRIVMSG" ["NickServ", "identify " ++ pass]
