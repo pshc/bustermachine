@@ -15,7 +15,6 @@ noticer (Name "NickServ" _ _, Notice _ m)
     pass <- getConfig "NickServPassword"
     case pass of Just pass -> write "PRIVMSG" ["NickServ", "identify " ++ pass]
                  Nothing   -> io $ putStrLn "Need 'NickServPassword' config!"
-noticer (Name "NickServ" _ _, Privmsg (ChatMsg m))
   | "Password accepted" `isInfixOf` m = do
     io $ putStrLn "Identified self."
 noticer _ = return ()

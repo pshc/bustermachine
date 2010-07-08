@@ -22,7 +22,8 @@ data Bot = Bot { socket :: Handle,
                  channels :: Map Channel ChannelState }
 
 type MessageProcessor = (Name, ServerMsg) -> Net ()
-data ChannelState = ChannelState { chanTopic :: Maybe String }
+data ChannelState = ChannelState { chanTopic :: Maybe String,
+                                   chanNames :: [String] }
 
 type Config = String -> Maybe String
 
@@ -34,7 +35,7 @@ requiredConfig s = do val <- ($ s) `fmap` gets botConfig
                       maybe (error $ "Config value '" ++ s ++ "' required")
                             return val
 
-initialChan = ChannelState Nothing
+initialChan = ChannelState Nothing []
 alterChan f ch = do bot <- get
                     put $ bot { channels = Map.alter f ch (channels bot) }
 
@@ -136,9 +137,6 @@ parseMessage msg = case msg of
                                       warn $ "Unknown message: " ++ ps'
                                       return []
   where
-    isChan (x:_) = (x == '#' || x == '&')
-    isChan _     = False
-
     extractAction (stripPrefix "\001ACTION " -> Just act)
                   | not (null act) && last act == '\001' = Action (init act)
     extractAction msg = ChatMsg msg
@@ -148,9 +146,14 @@ parseMessage msg = case msg of
 numCode msg = case msg of
     (331, ch:_)   -> setTopic Nothing `alterChan` ch
     (332, [ch,t]) -> setTopic (Just t) `alterChan` ch
+    (353, nms)    -> case dropWhile (not . isChan) nms of
+                       ch:nms' | isChan ch -> setNames nms' `alterChan` ch
+                       _ -> io $ warn $ "Bad NAMES message: " ++ unwords nms
     _             -> return ()
   where
     setTopic t = Just . maybe (initialChan { chanTopic = t })
                               (\c -> c { chanTopic = t })
+    setNames nms = Just . maybe (initialChan { chanNames = nms })
+                                (\c -> c { chanNames = nms })
 
 -- vi: set sw=4 ts=4 sts=4 tw=79 ai et nocindent:
