@@ -1,7 +1,7 @@
 {-# LANGUAGE DeriveDataTypeable #-}
 module Buster.Plugin (InChan,
        chanMsg, commandPlugin, dispatchPlugins, makePlugin, processorPlugin,
-       withPlugin) where
+       withPlugins) where
 
 import Buster.IRC
 import Buster.Message
@@ -44,11 +44,14 @@ eval ps ('!':s) = case words s of
     collectCommands w p cs = maybe cs (:cs) (w `Map.lookup` pluginCommands p)
 eval _ _ = return ()
 
-withPlugin :: String -> String -> ((String, Plugin) -> IO ()) -> IO ()
-withPlugin lib name cont = do
-    loaded <- loadDynamic (lib, "Buster.Machine." ++ name, "plugin")
-    maybe (hPutStrLn stderr $ "Couldn't load " ++ name ++ " from " ++ lib)
-          (>>= (cont . (,) name)) (loaded >>= fromDynamic)
+withPlugins :: String -> [String] -> ([(String, Plugin)] -> IO ()) -> IO ()
+withPlugins lib names cont = load names []
+  where
+    load []           ps = cont $ reverse ps
+    load (name:names) ps = do
+      loaded <- loadDynamic (lib, "Buster.Machine." ++ name, "plugin")
+      maybe (hPutStrLn stderr $ "Couldn't load " ++ name ++ " from " ++ lib)
+            (>>= (load names . (:ps) . (,) name)) (loaded >>= fromDynamic)
 
 makePlugin = toDyn :: IO Plugin -> Dynamic
 
