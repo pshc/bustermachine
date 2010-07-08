@@ -4,6 +4,7 @@ module Buster.Plugin (InChan,
        withPlugin) where
 
 import Buster.IRC
+import Buster.Message
 import Buster.Misc
 import Control.Monad.Reader
 import Data.Dynamic
