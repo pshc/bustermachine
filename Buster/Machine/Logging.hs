@@ -2,6 +2,7 @@ module Buster.Machine.Logging (plugin) where
 
 import Buster.IRC
 import Buster.Misc
+import Buster.Plugin
 import Control.Monad.State
 import qualified Data.Map as Map
 import Data.Time

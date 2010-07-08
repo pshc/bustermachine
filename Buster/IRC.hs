@@ -1,23 +1,18 @@
-{-# LANGUAGE DeriveDataTypeable, FlexibleInstances, RecordWildCards,
-             ViewPatterns #-}
-module Buster.IRC (Bot(..), InChan, IrcConfig(..), Net, ServerMsg(..),
-                   chanMsg, runBot, write,
-                   commandPlugin, processorPlugin,
-                   makePlugin, withPlugin) where
+{-# LANGUAGE FlexibleInstances, RecordWildCards, ViewPatterns #-}
+module Buster.IRC (Channel, MessageProcessor, Net,
+                   Bot(..), ChatMsg(..), IrcConfig(..), Name(..),
+                   ServerMsg(..),
+                   runBot, write) where
 
 import Buster.Misc
 import Control.Exception
-import Control.Monad.Reader
 import Control.Monad.State
 import Data.Char
-import Data.Dynamic
 import Data.List
 import Data.Map (Map)
 import qualified Data.Map as Map
-import Data.Typeable
 import Network
 import System.IO
-import System.Plugins
 import Text.Printf
 import Prelude hiding (catch, log)
  
@@ -28,8 +23,10 @@ data IrcConfig = IrcConfig {
 
 type Net = StateT Bot IO
 data Bot = Bot { socket :: Handle,
-                 plugins :: Map String Plugin,
+                 processor :: MessageProcessor,
                  channels :: Map Channel ChannelState }
+
+type MessageProcessor = (Name, ServerMsg) -> Net ()
 data ChannelState = ChannelState { chanTopic :: Maybe String }
 
 initialChan = ChannelState Nothing
@@ -37,24 +34,15 @@ alterChan f ch = do bot <- get
                     put $ bot { channels = Map.alter f ch (channels bot) }
 
 type Channel = String
-type InChan = ReaderT Channel Net
-
-data Plugin = Plugin {
-    pluginCommands :: Map String (String -> InChan ()),
-    pluginProcessor :: Maybe ((Name, ServerMsg) -> Net ())
-} deriving Typeable
-
-commandPlugin cmds = Plugin (Map.fromList cmds) Nothing
-processorPlugin p  = Plugin (Map.empty) (Just p)
 
 io = liftIO :: IO a -> Net a
 
-runBot :: IrcConfig -> [(String, Plugin)] -> IO ()
-runBot (IrcConfig {..}) ps = bracket setup disconnect loop
+runBot :: IrcConfig -> MessageProcessor -> IO ()
+runBot (IrcConfig {..}) mp = bracket setup disconnect loop
   where
     loop st = evalStateT go st `catch` (hPrint stderr :: IOException -> IO ())
     setup = do h <- connect
-               return $ Bot h (Map.fromList ps) Map.empty
+               return $ Bot h mp Map.empty
 
     connect = notify $ do
         h <- connectTo ircServer (PortNumber (fromIntegral ircPort))
@@ -73,11 +61,9 @@ listen :: Handle -> Net ()
 listen h = forever $ do
     (src, s) <- (stripSource . init) `fmap` io (hGetLine h)
     case parseParams s of m:ps -> do let nm = maybe NoName parseName src
+                                     p <- gets processor
                                      ms <- parseMessage (m, ps)
-                                     plgs <- Map.elems `fmap` gets plugins
-                                     forM_ ms $ \msg -> do
-                                       mapM_ (runProcessor (nm, msg)) plgs
-                                       dispatch (nm, msg)
+                                     mapM_ (p . (,) nm) ms
                           []   -> return ()
   where
     stripSource (':':s) = let (src, s') = break (== ' ') s
@@ -92,7 +78,6 @@ listen h = forever $ do
                              in if null word then reverse ws
                                              else go (word:ws) rest
 
-    runProcessor msg (Plugin {..}) = maybe (return ()) ($ msg) pluginProcessor
 
 warn = hPutStrLn stderr
 log = putStrLn
@@ -203,32 +188,4 @@ parseName s = let (nick, rest)  = break (== '!') s
                   (user, rest') = break (== '@') (tail rest)
               in Name nick user (tail rest')
 
-dispatch :: (Name, ServerMsg) -> Net ()
-dispatch msg = case snd msg of
-    Chanmsg ch (ChatMsg t@('!':_)) -> eval t `runReaderT` ch
-    _                              -> return ()
-
-eval :: String -> InChan ()
-eval ('!':s) = case words s of
-    (w:_) -> do ps <- lift $ gets plugins
-                case Map.fold (collectCommands w) [] ps of
-                  []  -> chanMsg ("No such command " ++ w ++ ".")
-                  [c] -> c (stripLeft $ drop (length w) s)
-                  cs  -> chanMsg ("Ambiguous command " ++ w ++ ".") -- TODO
-    []    -> chanMsg "Command expected."
-  where
-    collectCommands w p cs = maybe cs (:cs) (w `Map.lookup` pluginCommands p)
-eval _ = return ()
-
-chanMsg s = do nm <- ask
-               lift $ write "PRIVMSG" [nm, s]
-
-withPlugin :: String -> String -> ((String, Plugin) -> IO ()) -> IO ()
-withPlugin lib name cont = do
-    loaded <- loadDynamic (lib, "Buster.Machine." ++ name, "plugin")
-    maybe (hPutStrLn stderr $ "Couldn't load " ++ name ++ " from " ++ lib)
-          (>>= (cont . (,) name)) (loaded >>= fromDynamic)
-
-makePlugin = toDyn :: IO Plugin -> Dynamic
- 
 -- vi: set sw=4 ts=4 sts=4 tw=79 ai et nocindent:

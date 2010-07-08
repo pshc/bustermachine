@@ -2,6 +2,7 @@ module Buster.Machine.UNIX (plugin) where
 
 import Buster.IRC
 import Buster.Misc
+import Buster.Plugin
 import Control.Monad.State
 import Data.List
 import Data.Time.Clock

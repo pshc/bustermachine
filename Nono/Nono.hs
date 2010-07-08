@@ -1,6 +1,7 @@
 
 import Buster.IRC
 import Buster.Misc
+import Buster.Plugin
 import System.IO
 
 config = IrcConfig {
@@ -17,6 +18,6 @@ main = do
     let lib = "bustermachine-0.1"
     withPlugin lib "UNIX" $ \unix ->
       withPlugin lib "Logging" $ \logging ->
-        runBot config [unix, logging]
+        runBot config (dispatchPlugins [unix, logging])
 
 -- vi: set sw=4 ts=4 sts=4 tw=79 ai et nocindent:
