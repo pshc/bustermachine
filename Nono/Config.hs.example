@@ -5,4 +5,4 @@ config = (`lookup` [
   ("nick", "buster"),
   ("channel", "#buster"),
   ("NickServPassword", "X")
-])
+ ])

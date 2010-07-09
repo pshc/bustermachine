@@ -9,7 +9,7 @@ run: $(TARGET)
 	./$<
 
 $(TARGET): .dist $(TARGET_SRC)
-	@rm Nono/nono
+	@rm -f Nono/nono
 	@$(MAKE) -C Nono nono
 	@ln -sf Nono/nono $@
 
