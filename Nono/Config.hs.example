@@ -6,3 +6,5 @@ config = (`lookup` [
   ("channel", "#buster"),
   ("NickServPassword", "X")
  ])
+
+activePlugins = ["UNIX", "Logging", "Identity"]
