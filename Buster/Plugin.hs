@@ -7,6 +7,7 @@ import Buster.IRC
 import Buster.Message
 import Buster.Misc
 import Control.Monad.Reader
+import Data.Char
 import Data.Dynamic
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -35,7 +36,7 @@ dispatchPlugins ps msg = do
     pluginMap  = Map.fromList ps
 
 eval ps ('!':s) = case words s of
-    (w:_) -> do case Map.fold (collectCommands w) [] ps of
+    (w:_) -> do case Map.fold (collectCommands $ map toLower w) [] ps of
                   []  -> chanMsg ("No such command " ++ w ++ ".")
                   [c] -> c (stripLeft $ drop (length w) s)
                   cs  -> chanMsg ("Ambiguous command " ++ w ++ ".") -- TODO
