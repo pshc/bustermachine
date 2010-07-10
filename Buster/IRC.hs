@@ -1,5 +1,6 @@
 {-# LANGUAGE RecordWildCards, ViewPatterns #-}
-module Buster.IRC (Config, MessageProcessor, Net, Bot(..),
+module Buster.IRC (Config, MessageProcessor, Net,
+                   Bot(..), ChannelState(..),
                    getConfig, requiredConfig, runBot, write) where
 
 import Buster.Message
@@ -23,7 +24,7 @@ data Bot = Bot { socket :: Handle,
 
 type MessageProcessor = (Name, ServerMsg) -> Net ()
 data ChannelState = ChannelState { chanTopic :: Maybe String,
-                                   chanNames :: [String] }
+                                   chanNames :: Map Nick Priv }
 
 type Config = String -> Maybe String
 
@@ -35,7 +36,7 @@ requiredConfig s = do val <- ($ s) `fmap` gets botConfig
                       maybe (error $ "Config value '" ++ s ++ "' required")
                             return val
 
-initialChan = ChannelState Nothing []
+initialChan = ChannelState Nothing Map.empty
 alterChan f ch = do bot <- get
                     put $ bot { channels = Map.alter f ch (channels bot) }
 
@@ -153,7 +154,8 @@ numCode msg = case msg of
     (331, ch:_)   -> setTopic Nothing `alterChan` parseChan ch
     (332, [ch,t]) -> setTopic (Just t) `alterChan` parseChan ch
     (353, nms)    -> case dropWhile (not . isChan) nms of
-                       ch:nms' -> setNames nms' `alterChan` parseChan ch
+                       ch:nms' -> alterChan (setNames (parseChanNicks nms'))
+                                            (parseChan ch)
                        _ -> io $ warn $ "Bad NAMES message: " ++ unwords nms
     _             -> return ()
   where
@@ -161,5 +163,9 @@ numCode msg = case msg of
                               (\c -> c { chanTopic = t })
     setNames nms = Just . maybe (initialChan { chanNames = nms })
                                 (\c -> c { chanNames = nms })
+    parseChanNicks = Map.fromList . map parseNick
+    parseNick ('@':nm) = (nm, Op)
+    parseNick ('+':nm) = (nm, Voice)
+    parseNick nm       = (nm, Regular)
 
 -- vi: set sw=4 ts=4 sts=4 tw=79 ai et nocindent:

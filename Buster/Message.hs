@@ -20,6 +20,7 @@ instance Pretty Chan where
   pretty ((:+) s) = showString ('+':s)
 
 data Name = Name { nickName, userName, fullName :: String } | NoName
+data Priv = Op | Voice | Regular
 
 instance Pretty Name where
   pretty (Name n _ _) = showString n
@@ -31,9 +32,9 @@ instance Pretty (Name, ServerMsg) where
                                 (\awayMsg -> s "is away" . paren awayMsg) m
     Invite ch    -> who . s "invited you to " . pretty ch
     Join ch      -> who . s "has joined " . pretty ch
-    Kick ch n m  -> who . s "kicked " . s n . s " from " . pretty ch
+    Kick _ n m   -> s "*** " . s n . s " was kicked by " . pretty nm
                     . maybeParen m
-    Mode ch ms   -> who . foldl concatWords (s "sets mode:") ms
+    Mode _ ms    -> who . foldl concatWords (s "sets mode:") ms
     NickChange n -> who . s "is now known as " . s n
     Part ch m    -> who . s "has left " . pretty ch . maybeParen m
     Notice t m   -> case t of
@@ -43,7 +44,7 @@ instance Pretty (Name, ServerMsg) where
     PrivMsg t m  -> case t of
       Nick _  -> s "(PM) " . pretty (nm, m)
       Chan ch -> pretty (nm, m)
-    Topic ch m   -> who . s "changed " . pretty ch . s "'s topic to " . s m
+    Topic _ m    -> who . s "changes topic to \"" . s m . s "\""
     Quit m       -> s " has quit IRC" . paren m
    where
     s               = showString
@@ -57,5 +58,21 @@ data Chat = Chat String | Action String
 instance Pretty (Name, Chat) where
   pretty (nm, Chat t)    = ('<':) . pretty nm . ("> " ++) . showString t
   pretty (nm, Action t)  = ("* " ++) . pretty nm . (' ':) . showString t
+
+filterByChan :: (Nick -> Bool) -> (Name, ServerMsg) -> Chan -> Bool
+filterByChan inChan (nm, msg) ch = case msg of
+    Away _             -> sameChan
+    Join c             -> c == ch
+    Kick c _ _         -> c == ch
+    Mode c _           -> c == ch
+    NickChange _       -> sameChan
+    Part c _           -> c == ch
+    --Notice  (Chan c) _ -> c == ch
+    PrivMsg (Chan c) _ -> c == ch
+    Topic c _          -> c == ch
+    Quit _             -> sameChan
+    _                  -> False
+  where
+    sameChan = inChan (pretty nm "")
 
 -- vi: set sw=4 ts=4 sts=4 tw=79 ai et nocindent:
