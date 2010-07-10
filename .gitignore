@@ -2,6 +2,7 @@
 *.o
 *.swp
 bm
+data
 dist
 .dist
 logs
