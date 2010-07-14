@@ -22,7 +22,7 @@ data Bot = Bot { socket :: Handle,
                  processor :: MessageProcessor,
                  channels :: Map Chan ChannelState }
 
-type MessageProcessor = (Name, ServerMsg) -> Net ()
+type MessageProcessor = (Name, IRCMsg) -> Net ()
 data ChannelState = ChannelState { chanTopic :: Maybe String,
                                    chanNames :: Map Nick Priv }
 
@@ -69,15 +69,14 @@ listen :: Handle -> Net ()
 listen h = forever $ do
     (src, s) <- (stripSource . init) `fmap` io (hGetLine h)
     case parseParams s of m:ps -> do let nm = maybe NoName parseName src
-                                     p <- gets processor
+                                     proc <- gets processor
                                      ms <- parseMessage (m, ps)
-                                     mapM_ (p . (,) nm) ms
+                                     mapM_ (proc . (,) nm) ms
                           []   -> return ()
   where
     stripSource (':':s) = let (src, s') = break (== ' ') s
                           in (Just src, stripLeft s')
     stripSource s       = (Nothing, stripLeft s)
-    forever a = a >> forever a
     parseParams = go []
       where
         go ws s = case stripLeft s of
@@ -85,7 +84,6 @@ listen h = forever $ do
                     s     -> let (word, rest) = span (/= ' ') s
                              in if null word then reverse ws
                                              else go (word:ws) rest
-
 
 warn = hPutStrLn stderr
 log = putStrLn
@@ -111,8 +109,10 @@ joinParams ps = go [] ps
         omit = (>> go ps cs) . warn
 
 parseName s = let (nick, rest)  = break (== '!') s
-                  (user, rest') = break (== '@') (tail rest)
-              in Name nick user (tail rest')
+                  (user, rest') = break (== '@') (tail' rest)
+              in Name nick user (tail' rest')
+  where
+    tail' s = if null s then "" else tail s
 
 parseMessage msg = case msg of
     ("AWAY", [])       -> return [Away Nothing]

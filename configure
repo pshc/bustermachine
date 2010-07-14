@@ -1,1 +1,1 @@
-./Setup.lhs configure --user
+./Setup.lhs configure --user --enable-shared

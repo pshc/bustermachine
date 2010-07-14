@@ -1,6 +1,7 @@
 INSTALLATION
 ============
 
+cabal install --enable-shared HDBC HDBC-sqlite3
 cp Nono/Config.hs.example Nono/Config.hs
 ./configure
 make

@@ -1,26 +1,19 @@
-module Buster.Machine.UNIX (plugin) where
-
-import Buster.IRC
 import Buster.Misc
 import Buster.Plugin
-import Control.Monad.State
+import Control.Monad
 import Data.List
 import Data.Time.Clock
-import System.Exit
 
-io = liftIO :: IO a -> InChan a
-
-plugin = makePlugin $ do
-    uptime <- uptime `fmap` getCurrentTime
-    return $ commandPlugin [("uptime", uptime), ("quit", quit)]
+main = do uptime <- uptime `fmap` getCurrentTime
+          pluginMain $ commandPlugin [("uptime", uptime), ("quit", quit)]
   where
-    uptime zero _ = do
-      now <- io getCurrentTime
+    uptime zero ch _ = do
+      now <- getCurrentTime
       let diff = pretty (diffUTCTime now zero) ""
-      chanMsg $ "Uptime: " ++ diff
+      returnChat ch ("Uptime: " ++ diff)
 
-    quit _ = do lift $ write "QUIT" ["Exiting"]
-                io $ exitWith ExitSuccess
+    -- TODO: Remote termination & permissions system
+    quit ch _ = returnChat ch "I'll never stop."
  
 instance Pretty NominalDiffTime where
   pretty td = (++) . join . intersperse " " . filter (not . null) . map f $

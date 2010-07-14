@@ -1,6 +1,6 @@
 TARGET = bm
 TARGET_SRC := $(wildcard Nono/*.hs)
-DIST_SRC := $(wildcard Buster/*.hs) $(wildcard Buster/Machine/*.hs)
+DIST_SRC := $(wildcard Buster/*.hs)
 MAKE = make --no-print-directory
 
 all: $(TARGET)
@@ -8,7 +8,7 @@ all: $(TARGET)
 run: $(TARGET)
 	./$<
 
-$(TARGET): .dist $(TARGET_SRC)
+$(TARGET): .dist $(TARGET_SRC) plugins
 	@rm -f Nono/nono
 	@$(MAKE) -C Nono nono
 	@ln -sf Nono/nono $@
@@ -19,13 +19,16 @@ $(TARGET): .dist $(TARGET_SRC)
 	@touch $@
 
 configure: bustermachine.cabal
-	@echo "./Setup.lhs configure --user" > $@
-	@chmod a+x $@
+	@touch configure
 	./$@
+
+plugins:
+	@$(MAKE) -C plugins all
 
 clean:
 	./Setup.lhs clean
 	@$(MAKE) -C Nono clean
+	@$(MAKE) -C plugins clean
 	rm -f -- .dist $(TARGET)
 
-.PHONY: all clean run
+.PHONY: all clean plugins run
