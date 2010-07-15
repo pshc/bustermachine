@@ -2,7 +2,7 @@
 module Buster.Plugin (Machine, Plugin,
        commandPlugin, pluginMain, processorPlugin,
        io, lookupConfig, respondChat,
-       loadPlugin, setupMachine,
+       setupMachine
        ) where
 
 import Buster.IRC
@@ -58,31 +58,51 @@ io = liftIO :: IO a -> Plugin a
 
 setupMachine :: [String] -> IO MessageProcessor
 setupMachine ps = do installHandler openEndedPipe Ignore Nothing
-                     m <- newIORef =<< foldM loadPlugin (Machine Map.empty) ps
-                     return $ dispatchPlugins m
+                     getProcessID >>= createProcessGroup
+                     r <- newIORef (Machine Map.empty)
+                     installHandler processStatusChanged
+                                    (Catch $ cleanupPlugins r) Nothing
+                     mapM_ (addPlugin r) ps
+                     return $ dispatchPlugins r
+  where
+    cleanupPlugins r = do mach@(Machine {..}) <- readIORef r
+                          m' <- cleanup (Map.assocs machPlugins) machPlugins
+                          writeIORef r $ mach { machPlugins = m' }
+
+    cleanup []           m = return m
+    cleanup ((nm, p):ps) m = do
+        s <- getProcessStatus False True (ipcPID p)
+        case s of Just _  -> do putStrLn $ "Unloading " ++ nm
+                                cleanup ps (nm `Map.delete` m)
+                  Nothing -> cleanup ps m
 
 data Machine = Machine {
    machPlugins :: Map String PluginIPC
 }
 
-loadPlugin :: Machine -> String -> IO Machine
-loadPlugin mach@(Machine {..}) nm
-    | nm `Map.member` machPlugins = do putStrLn $ nm ++ " is already loaded!"
-                                       return mach
-    | otherwise = do
-        (pr, Fd cw) <- createPipe
-        (Fd cr, pw) <- createPipe
-        putStr $ "Loading " ++ nm ++ "... "
-        pid <- forkProcess $ executeFile ("plugins/bin/" ++ nm) False
-                                         [show cr, show cw] Nothing
-        r <- fdToHandle pr; dontBuffer r
-        w <- fdToHandle pw; dontBuffer w
-        recv r >>= either badAPI (addAPI . PluginIPC pid r w)
+addPlugin :: IORef Machine -> String -> IO ()
+addPlugin ref nm = do
+    putStr $ "Loading " ++ nm ++ "... "
+    mach@(Machine {..}) <- readIORef ref
+    if nm `Map.member` machPlugins then putStrLn $ nm ++ " is already loaded!"
+       else loadPlugin nm >>= maybe badAPI (addAPI mach ref)
   where
-    badAPI _ = do putStrLn "invalid spec!"
-                  return mach
-    addAPI a = do putStrLn "done."
-                  return $ mach { machPlugins = Map.insert nm a machPlugins }
+    addAPI m ref a = do putStrLn "done."
+                        let m' = Map.insert nm a (machPlugins m)
+                        writeIORef ref $ m { machPlugins = m' }
+    badAPI = putStrLn "invalid spec!"
+
+loadPlugin :: String -> IO (Maybe PluginIPC)
+loadPlugin nm = do
+    (pr, Fd cw) <- createPipe
+    (Fd cr, pw) <- createPipe
+    gid <- getProcessGroupID
+    pid <- forkProcess $ do joinProcessGroup gid
+                            executeFile ("plugins/bin/" ++ nm) False
+                                        [show cr, show cw] Nothing
+    r <- fdToHandle pr; dontBuffer r
+    w <- fdToHandle pw; dontBuffer w
+    either (const Nothing) (Just . PluginIPC pid r w) `fmap` recv r
 
 -- MACHINE-SIDE INTERNALS
 
