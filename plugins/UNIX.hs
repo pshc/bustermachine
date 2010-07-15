@@ -8,12 +8,12 @@ main = do uptime <- uptime `fmap` getCurrentTime
           pluginMain $ commandPlugin [("uptime", uptime), ("quit", quit)]
   where
     uptime zero ch _ = do
-      now <- getCurrentTime
+      now <- io getCurrentTime
       let diff = pretty (diffUTCTime now zero) ""
-      returnChat ch ("Uptime: " ++ diff)
+      respondChat ch ("Uptime: " ++ diff)
 
     -- TODO: Remote termination & permissions system
-    quit ch _ = returnChat ch "I'll never stop."
+    quit ch _ = respondChat ch "I'll never stop."
  
 instance Pretty NominalDiffTime where
   pretty td = (++) . join . intersperse " " . filter (not . null) . map f $

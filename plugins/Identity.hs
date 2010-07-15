@@ -8,9 +8,7 @@ main = pluginMain $ processorPlugin noticer
 noticer (Name "NickServ" _ _, Notice (Nick _) m)
   | "/msg NickServ IDENTIFY" `isInfixOf` m = do
     let pass = Nothing -- TODO: pass <- getConfig "NickServPassword"
-    case pass of Just p  -> returnChat (Nick "NickServ") ("identify " ++ p)
-                 Nothing -> do putStrLn "Need 'NickServPassword' config!"
-                               noResponse
-  | "Password accepted" `isInfixOf` m = do putStrLn "Identified self."
-                                           noResponse
-noticer _ = noResponse
+    case pass of Just p  -> respondChat (Nick "NickServ") ("identify " ++ p)
+                 Nothing -> io $ putStrLn "Need 'NickServPassword' config!"
+  | "Password accepted" `isInfixOf` m = io $ putStrLn "Identified self."
+noticer _ = return ()
