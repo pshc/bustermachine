@@ -1,4 +1,4 @@
-{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE DeriveDataTypeable, RecordWildCards #-}
 module Buster.Plugin (Machine, Plugin,
        commandPlugin, pluginMain, processorPlugin,
        io, lookupConfig, respondChat,
@@ -8,6 +8,7 @@ module Buster.Plugin (Machine, Plugin,
 import Buster.IRC
 import Buster.Message
 import Buster.Misc
+import Control.Exception
 import Control.Monad.Reader
 import Data.Char
 import Data.IORef
@@ -16,6 +17,8 @@ import qualified Data.Map as Map
 import Data.Maybe
 import Data.Set (Set)
 import qualified Data.Set as Set
+import Data.Typeable
+import Prelude hiding (catch)
 import System.Environment
 import System.IO
 import System.Posix
@@ -32,22 +35,26 @@ pluginMain (PluginImpl {..}) = do
     [r, w] <- mapM fdToHandle =<< (map (Fd . read) `fmap` getArgs)
     mapM_ dontBuffer [stdout, stderr, r, w]
     send w $ API (Map.keysSet pluginCommands) (isJust pluginProcessor)
-    forever loop `runReaderT` PluginState r w
+    catch (loop `runReaderT` PluginState r w) handleError
+    hClose r; hClose w
   where
-    loop = recv' >>= either invalidReq doReq
+    loop = recv' >>= either invalidReq ((>> loop) . doReq)
 
     doReq (ReqProcess msg)    = check ($ msg) pluginProcessor
     doReq (ReqCommand t ch a) = check ($ (ch, a)) (uncurry `fmap`
                                       Map.lookup t pluginCommands)
-    check f = maybe (io $ putStrLn "Request unsupported")
+    check f = maybe (io $ throwIO ReqUnsupportedException)
                     ((>> send' EndResponse) . f)
+
+    handleError :: ReqException -> IO ()
+    handleError = print -- and leave loop
 
 respondChat :: Target -> String -> Plugin ()
 respondChat t s = send' $ ClientMsg $ PrivMsg t (Chat s)
 
 lookupConfig :: String -> Plugin (Maybe String)
 lookupConfig s = do send' $ ConfigLookup s
-                    recv' >>= either ((>> return Nothing) . invalidReq) gotIt
+                    recv' >>= either invalidReq gotIt
   where
     gotIt (ReqConfig k (Just v)) | k == s = return (Just v)
     gotIt _                               = return Nothing
@@ -61,20 +68,24 @@ setupMachine ps = do installHandler openEndedPipe Ignore Nothing
                      getProcessID >>= createProcessGroup
                      r <- newIORef (Machine Map.empty)
                      installHandler processStatusChanged
-                                    (Catch $ cleanupPlugins r) Nothing
+                                    (Catch $ cleanupZombies r) Nothing
                      mapM_ (addPlugin r) ps
                      return $ dispatchPlugins r
   where
-    cleanupPlugins r = do mach@(Machine {..}) <- readIORef r
-                          m' <- cleanup (Map.assocs machPlugins) machPlugins
+    cleanupZombies r = do mach@(Machine {..}) <- readIORef r
+                          m' <- cleanups (Map.assocs machPlugins) machPlugins
                           writeIORef r $ mach { machPlugins = m' }
 
-    cleanup []           m = return m
-    cleanup ((nm, p):ps) m = do
-        s <- getProcessStatus False True (ipcPID p)
-        case s of Just _  -> do putStrLn $ "Unloading " ++ nm
-                                cleanup ps (nm `Map.delete` m)
-                  Nothing -> cleanup ps m
+    cleanups []           m = return m
+    cleanups ((nm, p):ps) m = getProcessStatus False True (ipcPID p)
+                              >>= maybe (cleanups ps m) handleStatus
+      where
+        handleStatus (Exited n)     = unload $ "exit (code " ++ show n ++ ")"
+        handleStatus (Terminated s) = unload $ "termination (" ++ show s ++ ")"
+        handleStatus (Stopped _)    = do killPlugin p
+                                         unload "stoppage (now terminated)"
+        unload s = do putStrLn $ "Unloading " ++ nm ++ " due to process " ++ s
+                      cleanups ps (nm `Map.delete` m)
 
 data Machine = Machine {
    machPlugins :: Map String PluginIPC
@@ -85,12 +96,11 @@ addPlugin ref nm = do
     putStr $ "Loading " ++ nm ++ "... "
     mach@(Machine {..}) <- readIORef ref
     if nm `Map.member` machPlugins then putStrLn $ nm ++ " is already loaded!"
-       else loadPlugin nm >>= maybe badAPI (addAPI mach ref)
+       else loadPlugin nm >>= maybe (return ()) (addAPI mach ref)
   where
     addAPI m ref a = do putStrLn "done."
                         let m' = Map.insert nm a (machPlugins m)
                         writeIORef ref $ m { machPlugins = m' }
-    badAPI = putStrLn "invalid spec!"
 
 loadPlugin :: String -> IO (Maybe PluginIPC)
 loadPlugin nm = do
@@ -102,7 +112,13 @@ loadPlugin nm = do
                                         [show cr, show cw] Nothing
     r <- fdToHandle pr; dontBuffer r
     w <- fdToHandle pw; dontBuffer w
-    either (const Nothing) (Just . PluginIPC pid r w) `fmap` recv r
+    recv r >>= either (badAPI r w pid) (return . Just . PluginIPC pid r w)
+  where
+    badAPI r w pid l = do putStrLn $ "Got invalid spec from " ++ nm ++ ":"
+                          putStrLn l
+                          hClose r; hClose w
+                          signalProcess softwareTermination pid
+                          return Nothing
 
 -- MACHINE-SIDE INTERNALS
 
@@ -154,12 +170,15 @@ recv h = do l <- liftIO $ hGetLine h
                                      _         -> Left l
 
 handleResponses :: PluginIPC -> Net ()
-handleResponses (PluginIPC {..}) = handleOne
+handleResponses p@(PluginIPC {..}) = handleOne
   where
-    handleOne = recv ipcRead >>= either invalidResp go
+    handleOne = recv ipcRead >>= either (liftIO . invalidIPC) go
 
     go EndResponse = return ()
     go resp        = doResponse ipcWrite resp >> handleOne
+
+    invalidIPC l = do putStrLn $ "Got invalid resp: " ++ l
+                      killPlugin p
 
 doResponse _ (ClientMsg msg) = case msg of
     PrivMsg t msg -> privMsg t $ formatChat msg
@@ -174,7 +193,7 @@ doResponse w (ConfigLookup k) = do v <- getConfig k
 privMsg :: Target -> String -> Net ()
 privMsg t s = write "PRIVMSG" [pretty t "", s]
 
-invalidResp = liftIO . putStrLn . ("Invalid resp: " ++)
+killPlugin = signalProcess softwareTermination . ipcPID
 
 -- PLUGIN-SIDE INTERNALS
 
@@ -196,6 +215,10 @@ send' = (asks pluginWrite >>=) . flip send
 recv' :: Plugin (Either String MachineReq)
 recv' = asks pluginRead >>= recv
 
-invalidReq = io . putStrLn . ("Invalid req: " ++)
+data ReqException = ReqParseException String | ReqUnsupportedException
+                    deriving (Show, Typeable)
+instance Exception ReqException
+
+invalidReq = io . throwIO . ReqParseException
 
  -- vi: set sw=4 ts=4 sts=4 tw=79 ai et nocindent:
