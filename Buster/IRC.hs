@@ -1,4 +1,4 @@
-{-# LANGUAGE RecordWildCards, ViewPatterns #-}
+{-# LANGUAGE RecordWildCards, TupleSections, ViewPatterns #-}
 module Buster.IRC (Config, MessageProcessor, Net,
                    Bot(..), ChannelState(..),
                    getChan, getChans, alterChan,
@@ -199,18 +199,16 @@ parseTarget t | isChan t  = return $ Chan (parseChan t)
 numCode msg = case msg of
     (331, ch:_)   -> setTopic Nothing `alterChan` parseChan ch
     (332, [ch,t]) -> setTopic (Just t) `alterChan` parseChan ch
-    (353, nms)    -> case dropWhile (not . isChan) nms of
-                       ch:nms' -> alterChan (setNames (parseChanNicks nms'))
-                                            (parseChan ch)
-                       _ -> io $ warn $ "Bad NAMES message: " ++ unwords nms
-    _             -> return ()
+    (353, dropWhile (not . isChan) -> ch:ns) -> do -- NAMES result
+        us <- forM ns $ \n -> let (nm, priv) = parseNick n
+                              in (, priv) `fmap` userFromName nm
+        setUsers (Map.fromList us) `alterChan` parseChan ch
+    _ -> return ()
   where
     setTopic t = Just . maybe (initialChan { chanTopic = t })
                               (\c -> c { chanTopic = t })
-    setNames _ _ = Nothing -- TEMP
-    --setNames nms = Just . maybe (initialChan { chanUsers = nms })
-    --                            (\c -> c { chanUsers = nms })
-    parseChanNicks = Map.fromList . map parseNick
+    setUsers us = Just . maybe (initialChan { chanUsers = us })
+                               (\c -> c { chanUsers = us })
     parseNick ('@':nm) = (nm, Op)
     parseNick ('+':nm) = (nm, Voice)
     parseNick nm       = (nm, Regular)
