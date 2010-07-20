@@ -68,15 +68,15 @@ instance Pretty (Name, Chat) where
   pretty (nm, Chat t)    = ('<':) . pretty nm . ("> " ++) . showString t
   pretty (nm, Action t)  = ("* " ++) . pretty nm . (' ':) . showString t
 
-filterByChan :: (Nick -> Bool) -> ServerMsg -> Chan -> Bool
-filterByChan inChan (nm, msg) ch = case msg of
-    Away _             -> sameChan
+filterByChan :: (Nick -> Bool) -> Bool -> ServerMsg -> Chan -> Bool
+filterByChan inChan extra (nm, msg) ch = case msg of
+    Away _             -> extra && sameChan
     Join c             -> c == ch
     Kick c _ _         -> c == ch
     Mode c _           -> c == ch
     NickChange _       -> sameChan
     Part c _           -> c == ch
-    --Notice  (Chan c) _ -> c == ch
+    Notice  (Chan c) _ -> extra && c == ch
     PrivMsg (Chan c) _ -> c == ch
     Topic c _          -> c == ch
     Quit _             -> sameChan

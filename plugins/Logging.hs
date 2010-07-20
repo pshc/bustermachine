@@ -19,10 +19,12 @@ logger dir msg chs = do
     now <- getZonedTime
     mapM_ (go now) (Map.assocs chs)
   where
-    go t (ch, cs) = when (filterByChan (`Map.member` chanNames cs) msg ch) $
+    go t (ch, cs) = when inChannel $
         let filename = dir ++ "/" ++ pretty ch ""
                        ++ "." ++ dateStr t ++ ".log"
         in appendFile filename $ (timeStr t ++) . pretty msg $ "\n"
+      where
+        inChannel = filterByChan (`Map.member` chanNames cs) False msg ch
 
 format' = formatTime defaultTimeLocale . iso8601DateFormat
 dateStr = format' Nothing
