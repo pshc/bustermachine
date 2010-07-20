@@ -1,7 +1,7 @@
 {-# LANGUAGE DeriveDataTypeable, RecordWildCards #-}
 module Buster.Plugin (Machine, Plugin,
        commandPlugin, pluginMain, processorPlugin,
-       io, lookupConfig, respondChat,
+       io, lookupConfig, queryChans, queryNames, respondChat,
        setupMachine
        ) where
 
@@ -58,6 +58,17 @@ lookupConfig s = do send' $ ConfigLookup s
   where
     gotIt (ReqConfig k (Just v)) | k == s = return (Just v)
     gotIt _                               = return Nothing
+
+queryChans :: Plugin (Map Chan ChannelState)
+queryChans = do send' ChansQuery
+                recv' >>= either invalidReq (\(ReqChans c) -> return c)
+
+queryNames :: Chan -> Plugin (Maybe (Map Nick Priv))
+queryNames ch = do send' $ NamesQuery ch
+                   recv' >>= either invalidReq gotIt
+  where
+    gotIt (ReqNames c m) | c == ch = return m
+    gotIt _                        = return Nothing
 
 io = liftIO :: IO a -> Plugin a
 
@@ -135,6 +146,8 @@ data API = API {
 
 data MachineReq = ReqProcess ServerMsg | ReqCommand String Target String
                   | ReqConfig String (Maybe String)
+                  | ReqNames Chan (Maybe (Map Nick Priv))
+                  | ReqChans (Map Chan ChannelState)
                   deriving (Read, Show)
 
 dispatchPlugins :: IORef Machine -> MessageProcessor
@@ -189,6 +202,9 @@ doResponse _ (ClientMsg msg) = case msg of
 
 doResponse w (ConfigLookup k) = do v <- getConfig k
                                    liftIO $ send w $ ReqConfig k v
+doResponse w (NamesQuery ch) = getChan ch >>= liftIO . send w . ReqNames ch
+                                                     . fmap chanNames
+doResponse w ChansQuery      = getChans >>= liftIO . send w . ReqChans
 
 privMsg :: Target -> String -> Net ()
 privMsg t s = write "PRIVMSG" [pretty t "", s]
@@ -206,7 +222,8 @@ data PluginState = PluginState {
     pluginRead, pluginWrite :: Handle
 }
 
-data PluginResp = ClientMsg IRCMsg | ConfigLookup String | EndResponse
+data PluginResp = ClientMsg IRCMsg | ConfigLookup String | NamesQuery Chan
+                  | ChansQuery | EndResponse
                   deriving (Read, Show)
 
 send' :: PluginResp -> Plugin ()

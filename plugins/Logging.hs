@@ -13,9 +13,7 @@ main = do let dir = "logs"
           doesDirectoryExist dir >>= (`unless` createDirectory dir)
           pluginMain $ processorPlugin (logStub dir)
   where
-    logStub dir msg = io $ logger dir msg uweng -- TEMP
-    uweng = Map.singleton ((:#) "cantide") $ ChannelState Nothing names
-    names = Map.fromList [("pau", Op), ("cantid", Regular)]
+    logStub dir msg = queryChans >>= io . logger dir msg
  
 logger dir msg chs = do
     now <- getZonedTime

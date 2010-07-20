@@ -1,6 +1,7 @@
 {-# LANGUAGE RecordWildCards, ViewPatterns #-}
 module Buster.IRC (Config, MessageProcessor, Net,
                    Bot(..), ChannelState(..),
+                   getChan, getChans, alterChan,
                    getConfig, requiredConfig, runBot, write) where
 
 import Buster.Message
@@ -25,6 +26,7 @@ data Bot = Bot { socket :: Handle,
 type MessageProcessor = (Name, IRCMsg) -> Net ()
 data ChannelState = ChannelState { chanTopic :: Maybe String,
                                    chanNames :: Map Nick Priv }
+                    deriving (Read, Show)
 
 type Config = String -> Maybe String
 
@@ -37,6 +39,9 @@ requiredConfig s = do val <- ($ s) `fmap` gets botConfig
                             return val
 
 initialChan = ChannelState Nothing Map.empty
+getChan ch = Map.lookup ch `fmap` gets channels
+getChans :: Net (Map Chan ChannelState)
+getChans   = gets channels
 alterChan f ch = do bot <- get
                     put $ bot { channels = Map.alter f ch (channels bot) }
 
