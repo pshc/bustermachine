@@ -21,11 +21,16 @@ type Net = StateT Bot IO
 data Bot = Bot { socket :: Handle,
                  botConfig :: Config,
                  processor :: MessageProcessor,
+                 users :: Map User UserInfo,
+                 userNicks :: Map String User,
+                 idCtr :: Int,
                  channels :: Map Chan ChannelState }
 
-type MessageProcessor = (Name, IRCMsg) -> Net ()
+initBot cfg mp h = Bot h cfg mp Map.empty Map.empty 1 Map.empty
+
+type MessageProcessor = ServerMsg -> Net ()
 data ChannelState = ChannelState { chanTopic :: Maybe String,
-                                   chanNames :: Map Nick Priv }
+                                   chanUsers :: Map User Priv }
                     deriving (Read, Show)
 
 type Config = String -> Maybe String
@@ -48,13 +53,11 @@ alterChan f ch = do bot <- get
 io = liftIO :: IO a -> Net a
 
 runBot :: Config -> MessageProcessor -> IO ()
-runBot cfg mp = bracket setup disconnect loop
+runBot cfg mp = bracket (initBot cfg mp `fmap` connect) disconnect loop
   where
     loop st = evalStateT go st `catch` (hPrint stderr :: IOException -> IO ())
-    setup = do h <- connect
-               return $ Bot h cfg mp Map.empty
     config s = maybe (error $ "Need config value for " ++ s) id (cfg s)
-    server   = config "server"
+    server = config "server"
     connect = notify $ do
         let port = PortNumber $ fromIntegral $ maybe 6667 read $ cfg "port"
         h <- connectTo server port
@@ -73,22 +76,39 @@ runBot cfg mp = bracket setup disconnect loop
 listen :: Handle -> Net ()
 listen h = forever $ do
     (src, s) <- (stripSource . init) `fmap` io (hGetLine h)
-    case parseParams s of m:ps -> do let nm = maybe NoName parseName src
-                                     proc <- gets processor
-                                     ms <- parseMessage (m, ps)
-                                     mapM_ (proc . (,) nm) ms
-                          []   -> return ()
+    case parseParams [] s of
+      "PING":ps -> write "PONG" ps
+      ms -> parseMessage ms >>= (\ms' -> unless (null ms') $
+                                         maybe (warnIgnored ms') (go ms') src)
   where
     stripSource (':':s) = let (src, s') = break (== ' ') s
                           in (Just src, stripLeft s')
     stripSource s       = (Nothing, stripLeft s)
-    parseParams = go []
+
+    parseParams ws (stripLeft -> ':':c) = reverse (c:ws)
+    parseParams ws s = let (word, rest) = span (/= ' ') (stripLeft s)
+                       in if null word then reverse ws
+                                       else parseParams (word:ws) rest
+
+    go ms nm = do user <- userFromName nm
+                  let msgs = zip (repeat user) ms
+                  mapM_ updateState msgs
+                  gets processor >>= forM_ msgs
+
+    updateState (u, msg) = case msg of
+        NickChange n -> lookupUser u >>= updateNick n
+        _            -> return ()
       where
-        go ws s = case stripLeft s of
-                    ':':c -> reverse (c:ws)
-                    s     -> let (word, rest) = span (/= ' ') s
-                             in if null word then reverse ws
-                                             else go (word:ws) rest
+        updateNick nick Nothing     = userFromName nick >> return ()
+        updateNick nick (Just info) = do
+            let oldNick = userNick info
+            updateUser u (info { userNick = nick })
+            bot <- get
+            put $ bot { userNicks = Map.insert nick u
+                                    (oldNick `Map.delete` userNicks bot) }
+
+    warnIgnored = io . warn . ("Message(s) ignored due to no source: " ++)
+                            . intercalate ", " . map show
 
 warn = hPutStrLn stderr
 log = putStrLn
@@ -113,34 +133,54 @@ joinParams ps = go [] ps
       where
         omit = (>> go ps cs) . warn
 
-parseName s = let (nick, rest)  = break (== '!') s
-                  (user, rest') = break (== '@') (tail' rest)
-              in Name nick user (tail' rest')
+lookupUser :: User -> Net (Maybe UserInfo)
+lookupUser = (`fmap` gets users) . Map.lookup
+
+updateUser :: User -> UserInfo -> Net ()
+updateUser u i = do bot <- get
+                    put $ bot { users = Map.insert u i (users bot) }
+
+userFromName nm = do let (nick, rest)  = break (== '!') nm
+                         (user, rest') = break (== '@') (tail' rest)
+                     Map.lookup nick `fmap` gets userNicks
+                         >>= maybe (newUser nick user (tail' rest')) return
   where
     tail' s = if null s then "" else tail s
+    newUser nick user host = do
+        bot@(Bot {..}) <- get
+        let uid = UserID idCtr
+        put $ bot { users = Map.insert uid (UserInfo nick user host) users,
+                    userNicks = Map.insert nick uid userNicks,
+                    idCtr = idCtr + 1 }
+        return uid
 
 parseMessage msg = case msg of
-    ("AWAY", [])       -> return [Away Nothing]
-    ("AWAY", [m])      -> return [Away (Just m)]
-    ("ERROR", [e])     -> io (warn $ "Server error report: " ++ e) >> return []
-    ("INVITE", [ch])   -> return [Invite (parseChan ch)]
-    ("JOIN", [ch])     -> return [Join (parseChan ch)]
-    ("KICK", [ch,n])   -> return [Kick (parseChan ch) n Nothing]
-    ("KICK", [ch,n,m]) -> return [Kick (parseChan ch) n (Just m)]
-    ("MODE", ch:ms)    -> return $ if isChan ch then [Mode (parseChan ch) ms]
-                                                else []
-    ("NICK", [n])      -> return [NickChange n]
-    ("PART", [ch])     -> return [Part (parseChan ch) Nothing]
-    ("PART", [ch,m])   -> return [Part (parseChan ch) (Just m)]
-    ("NOTICE", [ch,m]) -> return [Notice (parseTarget ch) m]
-    ("PING", ps)       -> write "PONG" ps >> return []
-    ("PRIVMSG", [d,m]) -> return [PrivMsg (parseTarget d) (extractAction m)]
-    ("TOPIC", [ch,t])  -> return [Topic (parseChan ch) t]
-    ("QUIT", [m])      -> return [Quit m]
-    (t, ps) | threeDigit t -> numCode (read t, ps) >> return []
-            | otherwise    -> io $ do ps' <- joinParams (t:ps)
-                                      warn $ "Unknown message: " ++ ps'
-                                      return []
+    ["AWAY"]            -> return [Away Nothing]
+    ["AWAY", m]         -> return [Away (Just m)]
+    ["ERROR", e]        -> do io $ warn $ "Server error report: " ++ e
+                              return []
+    ["INVITE", ch]      -> return [Invite (parseChan ch)]
+    ["JOIN", ch]        -> return [Join (parseChan ch)]
+    ["KICK", ch,n]      -> do u <- userFromName n
+                              return [Kick (parseChan ch) u Nothing]
+    ["KICK", ch,n,m]    -> do u <- userFromName n
+                              return [Kick (parseChan ch) u (Just m)]
+    "MODE":ch:ms        -> return $ if isChan ch then [Mode (parseChan ch) ms]
+                                                 else []
+    ["NICK", n]         -> return [NickChange n]
+    ["PART", ch]        -> return [Part (parseChan ch) Nothing]
+    ["PART", ch,m]      -> return [Part (parseChan ch) (Just m)]
+    ["NOTICE", ch,m]    -> do t <- parseTarget ch
+                              return [Notice t m]
+    ["PRIVMSG", d,m]    -> do t <- parseTarget d
+                              return [PrivMsg t (extractAction m)]
+    ["TOPIC", ch,t]     -> return [Topic (parseChan ch) t]
+    ["QUIT", m]         -> return [Quit m]
+    t:ps | threeDigit t -> numCode (read t, ps) >> return []
+         | otherwise    -> io $ do ps' <- joinParams (t:ps)
+                                   warn $ "Unknown message: " ++ ps'
+                                   return []
+    []                  -> return []
   where
     extractAction (stripPrefix "\001ACTION " -> Just act)
                   | not (null act) && last act == '\001' = Action (init act)
@@ -153,8 +193,8 @@ parseChan ('&':ch) = (:&) ch
 parseChan ('+':ch) = (:+) ch
 parseChan ch       = (:#) ch
 
-parseTarget t | isChan t  = Chan (parseChan t)
-              | otherwise = Nick t
+parseTarget t | isChan t  = return $ Chan (parseChan t)
+              | otherwise = User `fmap` userFromName t
 
 numCode msg = case msg of
     (331, ch:_)   -> setTopic Nothing `alterChan` parseChan ch
@@ -167,8 +207,9 @@ numCode msg = case msg of
   where
     setTopic t = Just . maybe (initialChan { chanTopic = t })
                               (\c -> c { chanTopic = t })
-    setNames nms = Just . maybe (initialChan { chanNames = nms })
-                                (\c -> c { chanNames = nms })
+    setNames _ _ = Nothing -- TEMP
+    --setNames nms = Just . maybe (initialChan { chanUsers = nms })
+    --                            (\c -> c { chanUsers = nms })
     parseChanNicks = Map.fromList . map parseNick
     parseNick ('@':nm) = (nm, Op)
     parseNick ('+':nm) = (nm, Voice)

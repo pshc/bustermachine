@@ -24,7 +24,7 @@ logger dir msg chs = do
                        ++ "." ++ dateStr t ++ ".log"
         in appendFile filename $ (timeStr t ++) . pretty msg $ "\n"
       where
-        inChannel = filterByChan (`Map.member` chanNames cs) False msg ch
+        inChannel = filterByChan (`Map.member` chanUsers cs) False msg ch
 
 format' = formatTime defaultTimeLocale . iso8601DateFormat
 dateStr = format' Nothing

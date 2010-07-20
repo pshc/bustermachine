@@ -5,10 +5,16 @@ import Data.List
 
 main = pluginMain $ processorPlugin noticer
 
-noticer (Name "NickServ" _ _, Notice (Nick _) m)
+noticer (u, Notice (User _) m) = if isNickServ u then nickServ u m
+                                                 else return ()
+  where
+    isNickServ = const False -- TODO
+noticer _ = return ()
+
+nickServ ns m
   | "/msg NickServ IDENTIFY" `isInfixOf` m = do
     pass <- lookupConfig "NickServPassword"
-    case pass of Just p  -> respondChat (Nick "NickServ") ("identify " ++ p)
+    case pass of Just p  -> respondChat (User ns) ("identify " ++ p)
                  Nothing -> io $ putStrLn "Need 'NickServPassword' config!"
   | "Password accepted" `isInfixOf` m = io $ putStrLn "Identified self."
-noticer _ = return ()
+  | otherwise = return ()

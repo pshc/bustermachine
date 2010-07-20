@@ -1,7 +1,7 @@
 {-# LANGUAGE DeriveDataTypeable, RecordWildCards #-}
 module Buster.Plugin (Machine, Plugin,
        commandPlugin, pluginMain, processorPlugin,
-       io, lookupConfig, queryChans, queryNames, respondChat,
+       io, lookupConfig, queryChans, queryUsers, respondChat,
        setupMachine
        ) where
 
@@ -63,11 +63,11 @@ queryChans :: Plugin (Map Chan ChannelState)
 queryChans = do send' ChansQuery
                 recv' >>= either invalidReq (\(ReqChans c) -> return c)
 
-queryNames :: Chan -> Plugin (Maybe (Map Nick Priv))
-queryNames ch = do send' $ NamesQuery ch
+queryUsers :: Chan -> Plugin (Maybe (Map User Priv))
+queryUsers ch = do send' $ UsersQuery ch
                    recv' >>= either invalidReq gotIt
   where
-    gotIt (ReqNames c m) | c == ch = return m
+    gotIt (ReqUsers c m) | c == ch = return m
     gotIt _                        = return Nothing
 
 io = liftIO :: IO a -> Plugin a
@@ -146,7 +146,7 @@ data API = API {
 
 data MachineReq = ReqProcess ServerMsg | ReqCommand String Target String
                   | ReqConfig String (Maybe String)
-                  | ReqNames Chan (Maybe (Map Nick Priv))
+                  | ReqUsers Chan (Maybe (Map User Priv))
                   | ReqChans (Map Chan ChannelState)
                   deriving (Read, Show)
 
@@ -202,8 +202,8 @@ doResponse _ (ClientMsg msg) = case msg of
 
 doResponse w (ConfigLookup k) = do v <- getConfig k
                                    liftIO $ send w $ ReqConfig k v
-doResponse w (NamesQuery ch) = getChan ch >>= liftIO . send w . ReqNames ch
-                                                     . fmap chanNames
+doResponse w (UsersQuery ch) = getChan ch >>= liftIO . send w . ReqUsers ch
+                                                     . fmap chanUsers
 doResponse w ChansQuery      = getChans >>= liftIO . send w . ReqChans
 
 privMsg :: Target -> String -> Net ()
@@ -222,7 +222,7 @@ data PluginState = PluginState {
     pluginRead, pluginWrite :: Handle
 }
 
-data PluginResp = ClientMsg IRCMsg | ConfigLookup String | NamesQuery Chan
+data PluginResp = ClientMsg IRCMsg | ConfigLookup String | UsersQuery Chan
                   | ChansQuery | EndResponse
                   deriving (Read, Show)
 
