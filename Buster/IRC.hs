@@ -122,6 +122,7 @@ parseName s = let (nick, rest)  = break (== '!') s
 parseMessage msg = case msg of
     ("AWAY", [])       -> return [Away Nothing]
     ("AWAY", [m])      -> return [Away (Just m)]
+    ("ERROR", [e])     -> io (warn $ "Server error report: " ++ e) >> return []
     ("INVITE", [ch])   -> return [Invite (parseChan ch)]
     ("JOIN", [ch])     -> return [Join (parseChan ch)]
     ("KICK", [ch,n])   -> return [Kick (parseChan ch) n Nothing]
