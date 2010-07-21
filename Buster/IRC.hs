@@ -96,9 +96,18 @@ listen h = forever $ do
                   gets processor >>= forM_ msgs
 
     updateState (u, msg) = case msg of
+        Join ch      -> join `alterChan` ch
+        Kick ch u' _ -> u' `left` ch
         NickChange n -> lookupUser u >>= updateNick n
+        Part ch _    -> u `left` ch
+        Quit _       -> (Map.keys `fmap` gets channels) >>= mapM_ (u `left`)
         _            -> return ()
       where
+        modUsers f c = c { chanUsers = f (chanUsers c) }
+        join = Just . maybe (initialChan {chanUsers = Map.singleton u Regular})
+                            (modUsers $ Map.insert u Regular)
+        u `left` ch = maybe Nothing (Just . modUsers (Map.delete u))
+                      `alterChan` ch
         updateNick nick Nothing     = userFromName nick >> return ()
         updateNick nick (Just info) = do
             let oldNick = userNick info
