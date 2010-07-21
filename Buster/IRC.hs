@@ -21,16 +21,19 @@ type Net = StateT Bot IO
 data Bot = Bot { socket :: Handle,
                  botConfig :: Config,
                  processor :: MessageProcessor,
+                 selfUser :: User,
                  users :: Map User UserInfo,
                  userNicks :: Map String User,
                  channels :: Map Chan ChannelState,
-                 ownNick :: String,
                  idCtr :: Int }
 
-initBot cfg mp h = Bot { socket = h, botConfig = cfg, processor = mp,
-                         users = none, userNicks = none, channels = none,
-                         ownNick = maybe "*" id (cfg "nick"), idCtr = 1 }
-  where none = Map.empty
+initBot cfg mp h =
+  let nick         = maybe "*" id (cfg "nick")
+      (self, info) = (UserID 0, UserInfo nick "" "")
+  in Bot { socket = h, botConfig = cfg, processor = mp,
+           selfUser = self, users = Map.singleton self info,
+           userNicks = Map.singleton nick self,
+           channels = Map.empty, idCtr = 1 }
 
 type MessageProcessor = ServerMsg -> Net ()
 data ChannelState = ChannelState { chanTopic :: Maybe String,
@@ -109,8 +112,11 @@ listen h = forever $ do
         modUsers f c = c { chanUsers = f (chanUsers c) }
         join = Just . maybe (initialChan {chanUsers = Map.singleton u Regular})
                             (modUsers $ Map.insert u Regular)
-        u `left` ch = maybe Nothing (Just . modUsers (Map.delete u))
-                      `alterChan` ch
+        u `left` ch = do self <- gets selfUser
+                         maybe Nothing (leave self) `alterChan` ch
+          where
+            leave self | u == self = const Nothing
+                       | otherwise = Just . modUsers (Map.delete u)
         updateNick nick Nothing     = userFromName nick >> return ()
         updateNick nick (Just info) = do
             let oldNick = userNick info
@@ -186,10 +192,8 @@ parseMessage msg = case msg of
                               return [PrivMsg t (extractAction m)]
     ["TOPIC", ch,t]     -> return [Topic (parseChan ch) t]
     ["QUIT", m]         -> return [Quit m]
-    t:d:ps | digits3 t  -> do n <- gets ownNick
-                              when (d /= n) $
-                                modify (\bot -> bot { ownNick = d })
-                                -- TODO: Update user?
+    t:n:ps | digits3 t  -> do self <- gets selfUser
+                              lookupUser self >>= checkOwnNick n self
                               numCode (read t, ps)
                               return []
     t:ps                -> io $ do ps' <- joinParams (t:ps)
@@ -200,6 +204,10 @@ parseMessage msg = case msg of
     extractAction (stripPrefix "\001ACTION " -> Just act)
                   | not (null act) && last act == '\001' = Action (init act)
     extractAction msg = Chat msg
+
+    checkOwnNick n self (Just info) | n /= userNick info = 
+        updateUser self (info { userNick = n })
+    checkOwnNick _ _ _ = return ()
 
     digits3 t = length t == 3 && all isDigit t
 
