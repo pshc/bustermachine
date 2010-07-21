@@ -17,4 +17,5 @@ nickServ ns m
     case pass of Just p  -> respondChat (User ns) ("identify " ++ p)
                  Nothing -> io $ putStrLn "Need 'NickServPassword' config!"
   | "Password accepted" `isInfixOf` m = io $ putStrLn "Identified self."
+  | "Password incorrect" `isInfixOf` m = io $ putStrLn "Bad NickServ password."
   | otherwise = return ()

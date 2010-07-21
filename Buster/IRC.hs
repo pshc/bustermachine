@@ -23,10 +23,14 @@ data Bot = Bot { socket :: Handle,
                  processor :: MessageProcessor,
                  users :: Map User UserInfo,
                  userNicks :: Map String User,
-                 idCtr :: Int,
-                 channels :: Map Chan ChannelState }
+                 channels :: Map Chan ChannelState,
+                 ownNick :: String,
+                 idCtr :: Int }
 
-initBot cfg mp h = Bot h cfg mp Map.empty Map.empty 1 Map.empty
+initBot cfg mp h = Bot { socket = h, botConfig = cfg, processor = mp,
+                         users = none, userNicks = none, channels = none,
+                         ownNick = maybe "*" id (cfg "nick"), idCtr = 1 }
+  where none = Map.empty
 
 type MessageProcessor = ServerMsg -> Net ()
 data ChannelState = ChannelState { chanTopic :: Maybe String,
@@ -47,8 +51,7 @@ initialChan = ChannelState Nothing Map.empty
 getChan ch = Map.lookup ch `fmap` gets channels
 getChans :: Net (Map Chan ChannelState)
 getChans   = gets channels
-alterChan f ch = do bot <- get
-                    put $ bot { channels = Map.alter f ch (channels bot) }
+alterChan f ch = modify (\b -> b { channels = Map.alter f ch (channels b) })
 
 io = liftIO :: IO a -> Net a
 
@@ -112,9 +115,8 @@ listen h = forever $ do
         updateNick nick (Just info) = do
             let oldNick = userNick info
             updateUser u (info { userNick = nick })
-            bot <- get
-            put $ bot { userNicks = Map.insert nick u
-                                    (oldNick `Map.delete` userNicks bot) }
+            modify (\bot -> bot { userNicks = Map.insert nick u
+                                  (oldNick `Map.delete` userNicks bot) })
 
     warnIgnored = io . warn . ("Message(s) ignored due to no source: " ++)
                             . intercalate ", " . map show
@@ -146,8 +148,7 @@ lookupUser :: User -> Net (Maybe UserInfo)
 lookupUser = (`fmap` gets users) . Map.lookup
 
 updateUser :: User -> UserInfo -> Net ()
-updateUser u i = do bot <- get
-                    put $ bot { users = Map.insert u i (users bot) }
+updateUser u i = modify $ \bot -> bot { users = Map.insert u i (users bot) }
 
 userFromName nm = do let (nick, rest)  = break (== '!') nm
                          (user, rest') = break (== '@') (tail' rest)
@@ -185,8 +186,13 @@ parseMessage msg = case msg of
                               return [PrivMsg t (extractAction m)]
     ["TOPIC", ch,t]     -> return [Topic (parseChan ch) t]
     ["QUIT", m]         -> return [Quit m]
-    t:ps | threeDigit t -> numCode (read t, ps) >> return []
-         | otherwise    -> io $ do ps' <- joinParams (t:ps)
+    t:d:ps | digits3 t  -> do n <- gets ownNick
+                              when (d /= n) $
+                                modify (\bot -> bot { ownNick = d })
+                                -- TODO: Update user?
+                              numCode (read t, ps)
+                              return []
+    t:ps                -> io $ do ps' <- joinParams (t:ps)
                                    warn $ "Unknown message: " ++ ps'
                                    return []
     []                  -> return []
@@ -195,7 +201,7 @@ parseMessage msg = case msg of
                   | not (null act) && last act == '\001' = Action (init act)
     extractAction msg = Chat msg
 
-    threeDigit t = length t == 3 && all isDigit t
+    digits3 t = length t == 3 && all isDigit t
 
 parseChan ('#':ch) = (:#) ch
 parseChan ('&':ch) = (:&) ch
@@ -208,10 +214,15 @@ parseTarget t | isChan t  = return $ Chan (parseChan t)
 numCode msg = case msg of
     (331, ch:_)   -> setTopic Nothing `alterChan` parseChan ch
     (332, [ch,t]) -> setTopic (Just t) `alterChan` parseChan ch
-    (353, dropWhile (not . isChan) -> ch:ns) -> do -- NAMES result
+    (333, ch:whom:when:_) -> return () -- Topic set when and by whom
+    -- NAMES result. TODO: buffer until 366 received (End of /NAMES list)
+    (353, dropWhile (not . isChan) -> ch:ns) -> do
         us <- forM ns $ \n -> let (nm, priv) = parseNick n
                               in (, priv) `fmap` userFromName nm
         setUsers (Map.fromList us) `alterChan` parseChan ch
+    (421, [cmd,err])  -> unless ("Quit" `isInfixOf` err) $
+                             io $ warn $ "Server: " ++ cmd ++ ": " ++ err
+    (433, [nick,err]) -> write "NICK " [nick ++ "`"]
     _ -> return ()
   where
     setTopic t = Just . maybe (initialChan { chanTopic = t })
