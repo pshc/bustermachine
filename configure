@@ -1,1 +1,6 @@
-./Setup.lhs configure --user --enable-shared
+# Stupid workaround
+if [ `uname` = Darwin ]; then
+  ./Setup.lhs configure --user
+else
+  ./Setup.lhs configure --user --enable-shared
+fi
