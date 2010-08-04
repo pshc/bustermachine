@@ -41,8 +41,8 @@ pluginMain (PluginImpl {..}) = do
     loop = recv' >>= either invalidReq ((>> loop) . doReq)
 
     doReq (ReqProcess msg)    = check ($ msg) pluginProcessor
-    doReq (ReqCommand t ch a) = check ($ (ch, a)) (uncurry `fmap`
-                                      Map.lookup t pluginCommands)
+    doReq (ReqCommand t ch a) = check ($ (ch, a)) $ uncurry `fmap`
+                                      Map.lookup (map toLower t) pluginCommands
     check f = maybe (io $ throwIO ReqUnsupportedException)
                     ((>> send' EndResponse) . f)
 
