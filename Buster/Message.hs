@@ -71,16 +71,16 @@ instance Pretty (User, Chat) where
 
 filterByChan :: (User -> Bool) -> Bool -> ServerMsg -> Chan -> Bool
 filterByChan inChan extra (src, msg) ch = case msg of
-    Away _             -> extra && inChan src
+    Away _             -> extra -- && inChan src
     Join c             -> c == ch
     Kick c _ _         -> c == ch
     Mode c _           -> c == ch
-    NickChange _       -> inChan src
+    NickChange _       -> True -- inChan src
     Part c _           -> c == ch
     Notice  (Chan c) _ -> extra && c == ch
     PrivMsg (Chan c) _ -> c == ch
     Topic c _          -> c == ch
-    Quit _             -> inChan src
+    Quit _             -> True -- inChan src
     _                  -> False
 
 -- vi: set sw=4 ts=4 sts=4 tw=79 ai et nocindent:
