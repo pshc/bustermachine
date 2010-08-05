@@ -1,4 +1,5 @@
-{-# LANGUAGE DeriveDataTypeable, RecordWildCards, TypeSynonymInstances #-}
+{-# LANGUAGE DeriveDataTypeable, RecordWildCards, TypeSynonymInstances,
+             ViewPatterns #-}
 module Buster.Plugin (Machine, Plugin,
        commandPlugin, pluginMain, processorPlugin,
        io, lookupConfig, queryChans, queryUsers, respondChat,
@@ -12,6 +13,7 @@ import Control.Exception
 import Control.Monad.Reader
 import Data.Char
 import Data.IORef
+import Data.List
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Maybe
@@ -42,7 +44,7 @@ pluginMain (PluginImpl {..}) = do
 
     doReq (ReqProcess msg)    = check ($ msg) pluginProcessor
     doReq (ReqCommand t ch a) = check ($ (ch, a)) $ uncurry `fmap`
-                                      Map.lookup (map toLower t) pluginCommands
+                                      Map.lookup (lower t) pluginCommands
     check f = maybe (io $ throwIO ReqUnsupportedException)
                     ((>> send' EndResponse) . f)
 
@@ -163,24 +165,38 @@ dispatchPlugins mRef msg = do
     mach@(Machine {..}) <- liftIO $ readIORef mRef
     mapM_ doProc [p | p <- Map.elems machPlugins, apiHasProcessor (ipcAPI p)]
     case snd msg of
-      PrivMsg t (Chat s@('!':_)) -> eval machPlugins t s
-      _                          -> return ()
+      PrivMsg t (Chat ('!':s)) -> do t' <- reflect (fst msg) t
+                                     doCmd machPlugins t' s (words s)
+      _                        -> return ()
   where
+    reflect _   (Chan ch) = return $ Chan ch
+    reflect src _         = return $ User src
+
     doProc p = do send (ipcWrite p) (ReqProcess msg)
                   handleResponses p
 
-eval ps t ('!':s) = case words s of
-    (w:_) -> do case Map.fold (collectPlugins $ map toLower w) [] ps of
-                  []  -> privMsg t ("No such command " ++ w ++ ".")
-                  [p] -> do let arg = stripLeft $ drop (length w) s
-                            send (ipcWrite p) (ReqCommand w t arg)
-                            handleResponses p
-                  ps  -> privMsg t ("Ambiguous command " ++ w ++ ".") -- TODO
-    []    -> privMsg t "Command expected."
+    doCmd ps t _ ((lower -> c):ws)
+      | c `elem` builtinCmds = builtinCmd ps t mRef c ws
+    doCmd ps t s (c:_)       = eval ps t (lower c)
+                                    (stripLeft $ drop (length c) s)
+    doCmd _  t _ []          = privMsg t "Command expected."
+
+builtinCmds = ["list", "load", "unload", "reload"]
+builtinCmd ps t r "list"   []  = privMsg t (intercalate ", " (Map.keys ps))
+builtinCmd ps t r "list"   _   = privMsg t "Can't list plugin commands yet."
+builtinCmd ps t r "load"   [p] = return ()
+builtinCmd ps t r "unload" [p] = return ()
+builtinCmd ps t r "reload" [p] = return ()
+builtinCmd ps t _ _        _   = privMsg t "Single plugin expected."
+
+eval ps t cmd arg = case Map.fold (collectPlugins $ lower cmd) [] ps of
+    []  -> privMsg t ("No such command " ++ cmd ++ ".")
+    [p] -> do send (ipcWrite p) (ReqCommand cmd t arg)
+              handleResponses p
+    ps  -> privMsg t ("Ambiguous command " ++ cmd ++ ".") -- TODO
   where
     collectPlugins w p cs | w `Set.member` apiCommandSet (ipcAPI p) = p:cs
                           | otherwise                               = cs
-eval _ _ _ = return ()
 
 send :: (MonadIO m, Show a) => Handle -> a -> m ()
 send h = liftIO . (>> hFlush h) . hPutStrLn h . show

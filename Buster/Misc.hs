@@ -1,4 +1,3 @@
-{-# LANGUAGE FlexibleContexts, FlexibleInstances, MultiParamTypeClasses #-}
 module Buster.Misc where
 
 import Control.Monad.Trans
@@ -11,6 +10,8 @@ stripIPrefix :: String -> String -> Maybe String
 stripIPrefix [] ys = Just ys
 stripIPrefix (x:xs) (y:ys) | toLower x == toLower y = stripIPrefix xs ys
 stripIPrefix _ _ = Nothing
+
+lower = map toLower
 
 dontBuffer = flip hSetBuffering NoBuffering
 
