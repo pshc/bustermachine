@@ -1,7 +1,19 @@
-{-# LANGUAGE FlexibleInstances, TypeSynonymInstances #-}
+{-# LANGUAGE FlexibleContexts, FlexibleInstances, TypeSynonymInstances #-}
 module Buster.Message where
 
 import Buster.Misc
+import Control.Monad.State
+import Data.Map (Map)
+import qualified Data.Map as Map
+
+class (Monad m) => Context m where
+  contextLookup :: User -> m (Maybe String)
+
+--instance (MonadTrans t, Context m, Monad (t m)) => Context (t m) where
+--  contextLookup = lift . contextLookup
+
+class Pretty a where
+  pretty :: (Context m) => a -> m ShowS
 
 data IRCMsg = Away (Maybe String) | Invite Chan | Join Chan
               | Kick Chan User (Maybe String) | Mode Chan [String]
@@ -16,17 +28,22 @@ data Chan = (:#) String | (:&) String | (:+) String
             deriving (Eq, Ord, Read, Show)
 
 instance Pretty Chan where
-  pretty ((:#) s) = showString ('#':s)
-  pretty ((:&) s) = showString ('&':s)
-  pretty ((:+) s) = showString ('+':s)
+  pretty ((:#) s) = return $ showString ('#':s)
+  pretty ((:&) s) = return $ showString ('&':s)
+  pretty ((:+) s) = return $ showString ('+':s)
 
 data User = UserID Int deriving (Eq, Ord, Read, Show)
 data UserInfo = UserInfo { userNick, userUser, userHost :: String }
                 deriving (Read, Show)
 
--- TEMP
 instance Pretty User where
-  pretty (UserID u) = showString ("User #") . shows u
+  pretty u = do nm <- contextLookup u
+                return $ maybe ("???" ++) showString nm
+
+data UsersState = UsersState { selfUser :: User,
+                               users :: Map User UserInfo,
+                               userNicks :: Map String User,
+                               idCtr :: Int }
 
 data Target = User User | Chan Chan deriving (Read, Show)
 
@@ -37,28 +54,37 @@ instance Pretty Target where
 data Priv = Op | Voice | Regular deriving (Read, Show)
 
 instance Pretty ServerMsg where
-  pretty (src, msg) = case msg of
-    Away m       -> who . maybe (s "is no longer away")
-                                (\awayMsg -> s "is away" . paren awayMsg) m
-    Invite ch    -> who . s "invited you to " . pretty ch
-    Join ch      -> who . s "has joined " . pretty ch
-    Kick _ u m   -> s "*** " . pretty u . s " was kicked by " . pretty src
-                    . maybeParen m
-    Mode _ ms    -> who . foldl concatWords (s "sets mode:") ms
-    NickChange n -> who . s "is now known as " . s n
-    Part ch m    -> who . s "has left " . pretty ch . maybeParen m
+  pretty (src, msg) = pretty src >>= prettyMsg (src, msg)
+
+prettyMsg :: (Context m) => ServerMsg -> ShowS -> m ShowS
+prettyMsg (src, msg) who = case msg of
+    Away m       -> meta $ maybe (s "is no longer away")
+                                 (\awayMsg -> s "is away" . paren awayMsg) m
+    Invite ch    -> do chan <- pretty ch
+                       meta $ s "invited you to " . chan
+    Join ch      -> do chan <- pretty ch
+                       meta $ s "has joined " . chan
+    Kick _ u m   ->  do kickee <- pretty u
+                        return $ s "*** " . kickee . s " was kicked by " . who
+                                          . maybeParen m
+    Mode _ ms    -> meta $ foldl concatWords (s "sets mode:") ms
+    NickChange n -> meta $ s "is now known as " . s n
+    Part ch m    -> do chan <- pretty ch
+                       meta $ s "has left " . chan . maybeParen m
     Notice t m   -> case t of
-      User _  -> s "Notice from " . pretty src . s ": " . s m
-      Chan ch -> s "Notice from " . pretty src . s " (" . pretty ch . s "): "
-                                  . s m
+      User _  -> return $ s "Notice from " . who . s ": " . s m
+      Chan ch -> do chan <- pretty ch
+                    return $ s "Notice from " . who . s " (" . chan . s "): "
+                                              . s m
     PrivMsg t m  -> case t of
-      User _ -> s "(PM) " . pretty (src, m)
+      User _ -> do pm <- pretty (src, m)
+                   return $ s "(PM) " . pm
       Chan _ -> pretty (src, m)
-    Topic _ m    -> who . s "changes topic to \"" . s m . s "\""
-    Quit m       -> s " has quit IRC" . paren m
+    Topic _ m    -> meta $ s "changes topic to \"" . s m . s "\""
+    Quit m       -> meta $ s " has quit IRC" . paren m
    where
     s               = showString
-    who             = s "*** " . pretty src . s " "
+    meta f          = return $ s "*** " . who . (' ':) . f
     paren m         = s " (" . s m . s ")"
     maybeParen      = maybe id paren
     concatWords f m = f . (' ':) . s m
@@ -66,8 +92,9 @@ instance Pretty ServerMsg where
 data Chat = Chat String | Action String deriving (Read, Show)
 
 instance Pretty (User, Chat) where
-  pretty (u, Chat t)    = ('<':) . pretty u . ("> " ++) . showString t
-  pretty (u, Action t)  = ("* " ++) . pretty u . (' ':) . showString t
+  pretty (u, c) = pretty u >>= \nick -> case c of
+    Chat t   -> return $ ('<':) . nick . ("> " ++) . showString t
+    Action t -> return $ ("* " ++) . nick . (' ':) . showString t
 
 filterByChan :: (User -> Bool) -> Bool -> ServerMsg -> Chan -> Bool
 filterByChan inChan extra (src, msg) ch = case msg of

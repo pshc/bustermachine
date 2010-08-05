@@ -1,4 +1,3 @@
-import Buster.Misc
 import Buster.Plugin
 import Control.Monad
 import Data.List
@@ -9,14 +8,12 @@ main = do uptime <- uptime `fmap` getCurrentTime
   where
     uptime zero ch _ = do
       now <- io getCurrentTime
-      let diff = pretty (diffUTCTime now zero) ""
-      respondChat ch ("Uptime: " ++ diff)
+      respondChat ch ("Uptime: " ++ niceTime (diffUTCTime now zero) "")
 
     -- TODO: Remote termination & permissions system
     quit ch _ = respondChat ch "I'll never stop."
  
-instance Pretty NominalDiffTime where
-  pretty td = (++) . join . intersperse " " . filter (not . null) . map f $
+niceTime td = (++) . join . intersperse " " . filter (not . null) . map f $
       [(years      , "y"), (months % 12, "m"),
        (days   % 28, "d"), (hours  % 24, "h"),
        (mins   % 60, "m"), (secs   % 60, "s")]

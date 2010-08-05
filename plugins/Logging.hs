@@ -1,6 +1,5 @@
 import Buster.IRC
 import Buster.Message
-import Buster.Misc
 import Buster.Plugin
 import Control.Monad.State
 import qualified Data.Map as Map
@@ -13,16 +12,17 @@ main = do let dir = "logs"
           doesDirectoryExist dir >>= (`unless` createDirectory dir)
           pluginMain $ processorPlugin (logStub dir)
   where
-    logStub dir msg = queryChans >>= io . logger dir msg
+    logStub dir msg = queryChans >>= logger dir msg
  
 logger dir msg chs = do
-    now <- getZonedTime
-    mapM_ (go now) (Map.assocs chs)
+    now <- io getZonedTime
+    line <- pretty msg
+    mapM_ (go now line) (Map.assocs chs)
   where
-    go t (ch, cs) = when inChannel $
-        let filename = dir ++ "/" ++ pretty ch ""
-                       ++ "." ++ dateStr t ++ ".log"
-        in appendFile filename $ (timeStr t ++) . pretty msg $ "\n"
+    go t line (ch, cs) = when inChannel $ do
+        chan <- pretty ch
+        let filename = dir ++ "/" ++ chan "" ++ "." ++ dateStr t ++ ".log"
+        io $ appendFile filename $ (timeStr t ++) . line $ "\n"
       where
         inChannel = filterByChan (`Map.member` chanUsers cs) False msg ch
 

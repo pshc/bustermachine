@@ -1,7 +1,8 @@
-{-# LANGUAGE RecordWildCards, TupleSections, ViewPatterns #-}
-module Buster.IRC (Config, MessageProcessor, Net,
+{-# LANGUAGE RecordWildCards, TupleSections, TypeSynonymInstances,
+             ViewPatterns #-}
+module Buster.IRC (Config, MessageProcessor, Net, Users,
                    Bot(..), ChannelState(..),
-                   getChan, getChans, alterChan,
+                   getChan, getChans, alterChan, lookupUser,
                    getConfig, requiredConfig, runBot, write) where
 
 import Buster.Message
@@ -21,21 +22,20 @@ type Net = StateT Bot IO
 data Bot = Bot { socket :: Handle,
                  botConfig :: Config,
                  processor :: MessageProcessor,
-                 selfUser :: User,
-                 users :: Map User UserInfo,
-                 userNicks :: Map String User,
-                 channels :: Map Chan ChannelState,
-                 idCtr :: Int }
+                 channels :: Map Chan ChannelState }
 
-initBot cfg mp h =
-  let nick         = maybe "*" id (cfg "nick")
-      (self, info) = (UserID 0, UserInfo nick "" "")
-  in Bot { socket = h, botConfig = cfg, processor = mp,
-           selfUser = self, users = Map.singleton self info,
-           userNicks = Map.singleton nick self,
-           channels = Map.empty, idCtr = 1 }
+type Users = StateT UsersState Net
 
-type MessageProcessor = ServerMsg -> Net ()
+initUsers nick = let (self, info) = (UserID 0, UserInfo nick "" "")
+                 in UsersState { selfUser = self,
+                                 users = Map.singleton self info,
+                                 userNicks = Map.singleton nick self,
+                                 idCtr = 1 }
+
+instance Context Users where
+  contextLookup k = (\us -> userNick `fmap` Map.lookup k us) `fmap` gets users
+
+type MessageProcessor = ServerMsg -> Users ()
 data ChannelState = ChannelState { chanTopic :: Maybe String,
                                    chanUsers :: Map User Priv }
                     deriving (Read, Show)
@@ -53,17 +53,18 @@ requiredConfig s = do val <- ($ s) `fmap` gets botConfig
 initialChan = ChannelState Nothing Map.empty
 getChan ch = Map.lookup ch `fmap` gets channels
 getChans :: Net (Map Chan ChannelState)
-getChans   = gets channels
+getChans = gets channels
+alterChan :: (Maybe ChannelState -> Maybe ChannelState) -> Chan -> Net ()
 alterChan f ch = modify (\b -> b { channels = Map.alter f ch (channels b) })
 
-io = liftIO :: IO a -> Net a
+io = liftIO :: IO a -> Users a
 
 runBot :: Config -> MessageProcessor -> IO ()
-runBot cfg mp = bracket (initBot cfg mp `fmap` connect) disconnect loop
+runBot cfg mp = bracket connect hClose ready
   where
-    loop st = evalStateT go st `catch` (hPrint stderr :: IOException -> IO ())
     config s = maybe (error $ "Need config value for " ++ s) id (cfg s)
-    server = config "server"
+    (nick, server) = (config "nick", config "server")
+
     connect = notify $ do
         let port = PortNumber $ fromIntegral $ maybe 6667 read $ cfg "port"
         h <- connectTo server port
@@ -71,21 +72,27 @@ runBot cfg mp = bracket (initBot cfg mp `fmap` connect) disconnect loop
         return h
     notify = bracket_ (printf "Connecting to %s ... " server)
                       (putStrLn "done.")
-    disconnect = hClose . socket
- 
-    go = do write "NICK" [config "nick"]
-            write "USER" [maybe (config "nick") id $ cfg "user",
+    ready h = do let bot = Bot { socket = h, botConfig = cfg, processor = mp,
+                                 channels = Map.empty }
+                 evalStateT go bot `catch` onErr
+    go = do write "NICK" [nick]
+            write "USER" [maybe nick id $ cfg "user",
                           "0", "*", maybe "" id $ cfg "fullName"]
             write "JOIN" [config "channel"]
-            gets socket >>= listen
+            gets socket >>= (`evalStateT` initUsers nick) . listen
+
+    onErr :: IOException -> IO ()
+    onErr = hPrint stderr
  
-listen :: Handle -> Net ()
-listen h = forever $ do
+listen :: Handle -> Users ()
+listen h = do
     (src, s) <- (stripSource . init) `fmap` io (hGetLine h)
     case parseParams [] s of
-      "PING":ps -> write "PONG" ps
-      ms -> parseMessage ms >>= (\ms' -> unless (null ms') $
-                                         maybe (warnIgnored ms') (go ms') src)
+      "PING":ps -> lift $ write "PONG" ps
+      ps        -> do ms <- parseMessage ps
+                      unless (null ms) $ maybe (warnIgnored ms)
+                                               (runProcessor ms) src
+    listen h
   where
     stripSource (':':s) = let (src, s') = break (== ' ') s
                           in (Just src, stripLeft s')
@@ -96,24 +103,26 @@ listen h = forever $ do
                        in if null word then reverse ws
                                        else parseParams (word:ws) rest
 
-    go ms nm = do user <- userFromName nm
-                  let msgs = zip (repeat user) ms
-                  mapM_ updateState msgs
-                  gets processor >>= forM_ msgs
+    runProcessor ms nm = do user <- userFromName nm
+                            let msgs = zip (repeat user) ms
+                            mapM_ updateState msgs
+                            lift (gets processor) >>= forM_ msgs
 
+    updateState :: (User, IRCMsg) -> Users ()
     updateState (u, msg) = case msg of
-        Join ch      -> join `alterChan` ch
+        Join ch      -> lift $ join `alterChan` ch
         Kick ch u' _ -> u' `left` ch
         NickChange n -> lookupUser u >>= updateNick n
         Part ch _    -> u `left` ch
-        Quit _       -> (Map.keys `fmap` gets channels) >>= mapM_ (u `left`)
+        Quit _       -> do chs <- Map.keys `fmap` lift (gets channels)
+                           mapM_ (u `left`) chs
         _            -> return ()
       where
         modUsers f c = c { chanUsers = f (chanUsers c) }
         join = Just . maybe (initialChan {chanUsers = Map.singleton u Regular})
                             (modUsers $ Map.insert u Regular)
         u `left` ch = do self <- gets selfUser
-                         maybe Nothing (leave self) `alterChan` ch
+                         lift $ maybe Nothing (leave self) `alterChan` ch
           where
             leave self | u == self = const Nothing
                        | otherwise = Just . modUsers (Map.delete u)
@@ -132,8 +141,8 @@ log = putStrLn
 
 write :: String -> [String] -> Net ()
 write msg ps = do h <- gets socket
-                  ps' <- io $ joinParams ps
-                  io $ hPrintf h "%s %s\r\n" msg ps'
+                  ps' <- liftIO $ joinParams ps
+                  liftIO $ hPrintf h "%s %s\r\n" msg ps'
 
 joinParams [] = return ""
 joinParams ps = go [] ps
@@ -150,12 +159,13 @@ joinParams ps = go [] ps
       where
         omit = (>> go ps cs) . warn
 
-lookupUser :: User -> Net (Maybe UserInfo)
+lookupUser :: User -> Users (Maybe UserInfo)
 lookupUser = (`fmap` gets users) . Map.lookup
 
-updateUser :: User -> UserInfo -> Net ()
+updateUser :: User -> UserInfo -> Users ()
 updateUser u i = modify $ \bot -> bot { users = Map.insert u i (users bot) }
 
+userFromName :: String -> Users User
 userFromName nm = do let (nick, rest)  = break (== '!') nm
                          (user, rest') = break (== '@') (tail' rest)
                      Map.lookup nick `fmap` gets userNicks
@@ -163,13 +173,14 @@ userFromName nm = do let (nick, rest)  = break (== '!') nm
   where
     tail' s = if null s then "" else tail s
     newUser nick user host = do
-        bot@(Bot {..}) <- get
+        us@(UsersState {..}) <- get
         let uid = UserID idCtr
-        put $ bot { users = Map.insert uid (UserInfo nick user host) users,
-                    userNicks = Map.insert nick uid userNicks,
-                    idCtr = idCtr + 1 }
+        put $ us { users = Map.insert uid (UserInfo nick user host) users,
+                   userNicks = Map.insert nick uid userNicks,
+                   idCtr = idCtr + 1 }
         return uid
 
+parseMessage :: [String] -> Users [IRCMsg]
 parseMessage msg = case msg of
     ["AWAY"]            -> return [Away Nothing]
     ["AWAY", m]         -> return [Away (Just m)]
@@ -219,18 +230,19 @@ parseChan ch       = (:#) ch
 parseTarget t | isChan t  = return $ Chan (parseChan t)
               | otherwise = User `fmap` userFromName t
 
+numCode :: (Int, [String]) -> Users ()
 numCode msg = case msg of
-    (331, ch:_)   -> setTopic Nothing `alterChan` parseChan ch
-    (332, [ch,t]) -> setTopic (Just t) `alterChan` parseChan ch
+    (331, ch:_)   -> lift $ setTopic Nothing `alterChan` parseChan ch
+    (332, [ch,t]) -> lift $ setTopic (Just t) `alterChan` parseChan ch
     (333, ch:whom:when:_) -> return () -- Topic set when and by whom
     -- NAMES result. TODO: buffer until 366 received (End of /NAMES list)
     (353, dropWhile (not . isChan) -> ch:ns) -> do
         us <- forM ns $ \n -> let (nm, priv) = parseNick n
                               in (, priv) `fmap` userFromName nm
-        setUsers (Map.fromList us) `alterChan` parseChan ch
+        lift $ setUsers (Map.fromList us) `alterChan` parseChan ch
     (421, [cmd,err])  -> unless ("Quit" `isInfixOf` err) $
                              io $ warn $ "Server: " ++ cmd ++ ": " ++ err
-    (433, [nick,err]) -> write "NICK " [nick ++ "`"]
+    (433, [nick,err]) -> lift $ write "NICK " [nick ++ "`"]
     _ -> return ()
   where
     setTopic t = Just . maybe (initialChan { chanTopic = t })

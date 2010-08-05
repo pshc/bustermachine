@@ -1,4 +1,4 @@
-{-# LANGUAGE DeriveDataTypeable, RecordWildCards #-}
+{-# LANGUAGE DeriveDataTypeable, RecordWildCards, TypeSynonymInstances #-}
 module Buster.Plugin (Machine, Plugin,
        commandPlugin, pluginMain, processorPlugin,
        io, lookupConfig, queryChans, queryUsers, respondChat,
@@ -69,6 +69,13 @@ queryUsers ch = do send' $ UsersQuery ch
   where
     gotIt (ReqUsers c m) | c == ch = return m
     gotIt _                        = return Nothing
+
+instance Context Plugin where
+  contextLookup user = do send' (NickLookup user)
+                          recv' >>= either invalidReq gotIt
+    where
+      gotIt (ReqNick u n) | u == user = return n
+      gotIt _                         = return Nothing
 
 io = liftIO :: IO a -> Plugin a
 
@@ -148,6 +155,7 @@ data MachineReq = ReqProcess ServerMsg | ReqCommand String Target String
                   | ReqConfig String (Maybe String)
                   | ReqUsers Chan (Maybe (Map User Priv))
                   | ReqChans (Map Chan ChannelState)
+                  | ReqNick User (Maybe String)
                   deriving (Read, Show)
 
 dispatchPlugins :: IORef Machine -> MessageProcessor
@@ -182,7 +190,7 @@ recv h = do l <- liftIO $ hGetLine h
             return $ case reads l of [(a, "")] -> Right a
                                      _         -> Left l
 
-handleResponses :: PluginIPC -> Net ()
+handleResponses :: PluginIPC -> Users ()
 handleResponses p@(PluginIPC {..}) = handleOne
   where
     handleOne = recv ipcRead >>= either (liftIO . invalidIPC) go
@@ -193,21 +201,24 @@ handleResponses p@(PluginIPC {..}) = handleOne
     invalidIPC l = do putStrLn $ "Got invalid resp: " ++ l
                       killPlugin p
 
-doResponse _ (ClientMsg msg) = case msg of
-    PrivMsg t msg -> privMsg t $ formatChat msg
-    _             -> liftIO $ putStrLn $ "TODO: Perform " ++ show msg
+doResponse w q = case q of
+    ClientMsg (PrivMsg t msg) -> privMsg t $ formatChat msg
+    ClientMsg m               -> liftIO $ putStrLn $ "TODO: Perform " ++ show m
+
+    ConfigLookup k -> do v <- lift (getConfig k)
+                         reply $ ReqConfig k v
+    UsersQuery ch  -> lift (getChan ch) >>= reply . ReqUsers ch
+                                                  . fmap chanUsers
+    ChansQuery     -> lift getChans >>= reply . ReqChans
+    NickLookup u   -> lookupUser u >>= reply. ReqNick u . fmap userNick
   where
     formatChat (Chat s)   = s
     formatChat (Action s) = "\001ACTION " ++ s ++ "\001"
+    reply = liftIO . send w
 
-doResponse w (ConfigLookup k) = do v <- getConfig k
-                                   liftIO $ send w $ ReqConfig k v
-doResponse w (UsersQuery ch) = getChan ch >>= liftIO . send w . ReqUsers ch
-                                                     . fmap chanUsers
-doResponse w ChansQuery      = getChans >>= liftIO . send w . ReqChans
-
-privMsg :: Target -> String -> Net ()
-privMsg t s = write "PRIVMSG" [pretty t "", s]
+privMsg :: Target -> String -> Users ()
+privMsg t s = do dest <- pretty t
+                 lift $ write "PRIVMSG" [dest "", s]
 
 killPlugin = signalProcess softwareTermination . ipcPID
 
@@ -223,7 +234,7 @@ data PluginState = PluginState {
 }
 
 data PluginResp = ClientMsg IRCMsg | ConfigLookup String | UsersQuery Chan
-                  | ChansQuery | EndResponse
+                  | ChansQuery | NickLookup User | EndResponse
                   deriving (Read, Show)
 
 send' :: PluginResp -> Plugin ()

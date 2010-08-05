@@ -1,10 +1,9 @@
+{-# LANGUAGE FlexibleContexts, FlexibleInstances, MultiParamTypeClasses #-}
 module Buster.Misc where
 
+import Control.Monad.Trans
 import Data.Char
 import System.IO
-
-class Pretty a where
-  pretty :: a -> ShowS
 
 stripLeft = dropWhile (== ' ')
 
