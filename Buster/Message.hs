@@ -1,4 +1,3 @@
-{-# LANGUAGE FlexibleContexts, FlexibleInstances, TypeSynonymInstances #-}
 module Buster.Message where
 
 import Buster.Misc
@@ -53,48 +52,7 @@ instance Pretty Target where
 
 data Priv = Op | Voice | Regular deriving (Read, Show)
 
-instance Pretty ServerMsg where
-  pretty (src, msg) = pretty src >>= prettyMsg (src, msg)
-
-prettyMsg :: (Context m) => ServerMsg -> ShowS -> m ShowS
-prettyMsg (src, msg) who = case msg of
-    Away m       -> meta $ maybe (s "is no longer away")
-                                 (\awayMsg -> s "is away" . paren awayMsg) m
-    Invite ch    -> do chan <- pretty ch
-                       meta $ s "invited you to " . chan
-    Join ch      -> do chan <- pretty ch
-                       meta $ s "has joined " . chan
-    Kick _ u m   ->  do kickee <- pretty u
-                        return $ s "*** " . kickee . s " was kicked by " . who
-                                          . maybeParen m
-    Mode _ ms    -> meta $ foldl concatWords (s "sets mode:") ms
-    NickChange n -> meta $ s "is now known as " . s n
-    Part ch m    -> do chan <- pretty ch
-                       meta $ s "has left " . chan . maybeParen m
-    Notice t m   -> case t of
-      User _  -> return $ s "Notice from " . who . s ": " . s m
-      Chan ch -> do chan <- pretty ch
-                    return $ s "Notice from " . who . s " (" . chan . s "): "
-                                              . s m
-    PrivMsg t m  -> case t of
-      User _ -> do pm <- pretty (src, m)
-                   return $ s "(PM) " . pm
-      Chan _ -> pretty (src, m)
-    Topic _ m    -> meta $ s "changes topic to \"" . s m . s "\""
-    Quit m       -> meta $ s " has quit IRC" . paren m
-   where
-    s               = showString
-    meta f          = return $ s "*** " . who . (' ':) . f
-    paren m         = s " (" . s m . s ")"
-    maybeParen      = maybe id paren
-    concatWords f m = f . (' ':) . s m
-
 data Chat = Chat String | Action String deriving (Read, Show)
-
-instance Pretty (User, Chat) where
-  pretty (u, c) = pretty u >>= \nick -> case c of
-    Chat t   -> return $ ('<':) . nick . ("> " ++) . showString t
-    Action t -> return $ ("* " ++) . nick . (' ':) . showString t
 
 filterByChan :: (User -> Bool) -> Bool -> ServerMsg -> Chan -> Bool
 filterByChan inChan extra (src, msg) ch = case msg of
