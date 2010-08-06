@@ -21,7 +21,6 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Typeable
 import Prelude hiding (catch)
-import System.Environment
 import System.IO
 import System.Posix
 
@@ -34,7 +33,7 @@ processorPlugin p  = PluginImpl (Map.empty) (Just p)
 
 pluginMain :: PluginImpl -> IO ()
 pluginMain (PluginImpl {..}) = do
-    [r, w] <- mapM fdToHandle =<< (map (Fd . read) `fmap` getArgs)
+    [r, w] <- mapM parsePipe ["READ", "WRITE"]
     mapM_ dontBuffer [stdout, stderr, r, w]
     send w $ API (Map.keysSet pluginCommands) (isJust pluginProcessor)
     catch (loop `runReaderT` PluginState r w) handleError
@@ -47,6 +46,8 @@ pluginMain (PluginImpl {..}) = do
                                       Map.lookup (lower t) pluginCommands
     check f = maybe (io $ throwIO ReqUnsupportedException)
                     ((>> send' EndResponse) . f)
+
+    parsePipe = (>>= fdToHandle) . fmap (Fd . read . fromJust) . getEnv
 
     handleError :: ReqException -> IO ()
     handleError = print -- and leave loop
@@ -89,7 +90,7 @@ setupMachine ps = do installHandler openEndedPipe Ignore Nothing
                      r <- newIORef (Machine Map.empty)
                      installHandler processStatusChanged
                                     (Catch $ cleanupZombies r) Nothing
-                     mapM_ (addPlugin r) ps
+                     mapM_ (loadPlugin r) ps
                      return $ dispatchPlugins r
   where
     cleanupZombies r = do mach@(Machine {..}) <- readIORef r
@@ -100,47 +101,69 @@ setupMachine ps = do installHandler openEndedPipe Ignore Nothing
     cleanups ((nm, p):ps) m = getProcessStatus False True (ipcPID p)
                               >>= maybe (cleanups ps m) handleStatus
       where
-        handleStatus (Exited n)     = unload $ "exit (code " ++ show n ++ ")"
+        handleStatus (Exited n)     = unload $ "exit (" ++ show n ++ ")"
         handleStatus (Terminated s) = unload $ "termination (" ++ show s ++ ")"
         handleStatus (Stopped _)    = do killPlugin p
                                          unload "stoppage (now terminated)"
-        unload s = do putStrLn $ "Unloading " ++ nm ++ " due to process " ++ s
+        unload s = do when (nm `Map.member` m) $
+                       putStrLn $ "Unloading " ++ nm ++ " due to process " ++ s
                       cleanups ps (nm `Map.delete` m)
 
 data Machine = Machine {
    machPlugins :: Map String PluginIPC
 }
 
-addPlugin :: IORef Machine -> String -> IO ()
-addPlugin ref nm = do
-    putStr $ "Loading " ++ nm ++ "... "
+loadPlugin :: IORef Machine -> String -> IO Bool
+loadPlugin ref nm = do
     mach@(Machine {..}) <- readIORef ref
-    if nm `Map.member` machPlugins then putStrLn $ nm ++ " is already loaded!"
-       else loadPlugin nm >>= maybe (return ()) (addAPI mach ref)
+    exists <- checkExists
+    if not exists then return False else
+       if nm `Map.member` machPlugins
+         then putStrLn (nm ++ " is already loaded!") >> return False
+         else doLoad >>= maybe (return False) (addAPI mach)
   where
-    addAPI m ref a = do putStrLn "done."
-                        let m' = Map.insert nm a (machPlugins m)
-                        writeIORef ref $ m { machPlugins = m' }
+    doLoad = do (pr, Fd cw) <- createPipe
+                (Fd cr, pw) <- createPipe
+                gid <- getProcessGroupID
+                let env = [("READ", show cr), ("WRITE", show cw)]
+                    bin = dir ++ "/" ++ nm
+                pid <- forkProcess $ do joinProcessGroup gid
+                                        executeFile bin False [] (Just env)
+                r <- fdToHandle pr; dontBuffer r
+                w <- fdToHandle pw; dontBuffer w
+                recv r >>= either (badAPI r w pid)
+                                  (return . Just . PluginIPC pid r w)
 
-loadPlugin :: String -> IO (Maybe PluginIPC)
-loadPlugin nm = do
-    (pr, Fd cw) <- createPipe
-    (Fd cr, pw) <- createPipe
-    gid <- getProcessGroupID
-    pid <- forkProcess $ do joinProcessGroup gid
-                            executeFile ("plugins/bin/" ++ nm) False
-                                        [show cr, show cw] Nothing
-    r <- fdToHandle pr; dontBuffer r
-    w <- fdToHandle pw; dontBuffer w
-    recv r >>= either (badAPI r w pid) (return . Just . PluginIPC pid r w)
-  where
     badAPI r w pid l = do putStrLn $ "Got invalid spec from " ++ nm ++ ":"
                           putStrLn l
                           hClose r; hClose w
                           signalProcess softwareTermination pid
                           return Nothing
 
--- MACHINE-SIDE INTERNALS
+    addAPI m a = do let m' = Map.insert nm a (machPlugins m)
+                    writeIORef ref $ m { machPlugins = m' }
+                    return True
+
+    dir = "plugins/bin/"
+    checkExists = bracket (openDirStream dir) closeDirStream go
+      where
+        go s = do fp <- readDirStream s
+                  case fp of "" -> return False
+                             "." -> go s; ".." -> go s
+                             _ | fp == nm  -> return True
+                               | otherwise -> go s
+
+unloadPlugin r nm = do mach <- readIORef r
+                       maybe (return ()) (go mach)
+                             (nm `Map.lookup` machPlugins mach)
+  where
+    go m p = do writeIORef r $ m {machPlugins = nm `Map.delete` machPlugins m}
+                killPlugin p
+                --- XXX: Could block indefinitely from a malicious plugin
+                getProcessStatus True True (ipcPID p)
+                return ()
+
+killPlugin = signalProcess softwareTermination . ipcPID
 
 data PluginIPC = PluginIPC {
     ipcPID :: ProcessID,
@@ -181,13 +204,32 @@ dispatchPlugins mRef msg = do
                                     (stripLeft $ drop (length c) s)
     doCmd _  t _ []          = privMsg t "Command expected."
 
-builtinCmds = ["list", "load", "unload", "reload"]
-builtinCmd ps t r "list"   []  = privMsg t (intercalate ", " (Map.keys ps))
-builtinCmd ps t r "list"   _   = privMsg t "Can't list plugin commands yet."
-builtinCmd ps t r "load"   [p] = return ()
-builtinCmd ps t r "unload" [p] = return ()
-builtinCmd ps t r "reload" [p] = return ()
-builtinCmd ps t _ _        _   = privMsg t "Single plugin expected."
+builtinCmds = ["list", "load", "reload", "unload"]
+builtinCmd ps t _ "list" [] =
+    let ps' = Set.toList $ Set.insert "Plugins" (Map.keysSet ps)
+    in privMsg t (intercalate ", " ps')
+builtinCmd _  t _ cmd ["Plugins"] = privMsg t $ case cmd of -- fake meta plugin
+    "list"   -> showCmdList builtinCmds
+    "load"   -> "Plugins is already loaded."
+    "reload" -> "Cannot reload Plugins."
+    "unload" -> "Cannot unload Plugins."
+builtinCmd ps t r c [nm] = case (c, nm `Map.lookup` ps) of
+    ("list", Just p)   -> privMsg t $ ipcCmdList p
+    ("load", Nothing)  -> loadIt
+    ("load", Just _)   -> privMsg t (nm ++ " is already loaded.")
+    ("reload", Just _) -> liftIO (unloadPlugin r nm) >> loadIt
+    ("unload", Just _) -> liftIO (unloadPlugin r nm) >> gotcha
+    _                  -> privMsg t $ "No such plugin '" ++ nm ++ ".'"
+  where
+    loadIt = do r <- liftIO $ loadPlugin r nm
+                if r then gotcha else privMsg t "Plugin load failed."
+    gotcha = privMsg t "Gotcha."
+    ipcCmdList = showCmdList . Set.toList . apiCommandSet . ipcAPI
+
+builtinCmd _ t _ _ _ = privMsg t "Plugin expected."
+
+showCmdList []   = "That plugin has no commands."
+showCmdList cmds = (intercalate ", " cmds)
 
 eval ps t cmd arg = case Map.fold (collectPlugins $ lower cmd) [] ps of
     []  -> privMsg t ("No such command " ++ cmd ++ ".")
@@ -235,8 +277,6 @@ doResponse w q = case q of
 privMsg :: Target -> String -> Users ()
 privMsg t s = do dest <- pretty t
                  lift $ write "PRIVMSG" [dest "", s]
-
-killPlugin = signalProcess softwareTermination . ipcPID
 
 -- PLUGIN-SIDE INTERNALS
 
