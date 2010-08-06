@@ -85,14 +85,13 @@ runBot cfg mp = bracket connect hClose ready
     onErr = hPrint stderr
  
 listen :: Handle -> Users ()
-listen h = do
+listen h = forever $ do
     (src, s) <- (stripSource . init) `fmap` io (hGetLine h)
     case parseParams [] s of
       "PING":ps -> lift $ write "PONG" ps
       ps        -> do ms <- parseMessage ps
                       unless (null ms) $ maybe (warnIgnored ms)
                                                (runProcessor ms) src
-    listen h
   where
     stripSource (':':s) = let (src, s') = break (== ' ') s
                           in (Just src, stripLeft s')
