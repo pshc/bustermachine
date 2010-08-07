@@ -59,7 +59,7 @@ prettyMsg (src, msg) who = case msg of
                    return $ s "(PM) " . pm
       Chan _ -> pretty (src, m)
     Topic _ m    -> meta $ s "changes topic to \"" . s m . s "\""
-    Quit m       -> meta $ s " has quit IRC" . paren m
+    Quit m       -> meta $ s "has quit IRC" . paren m
    where
     s               = showString
     meta f          = return $ s "*** " . who . (' ':) . f
