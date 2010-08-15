@@ -69,6 +69,7 @@ runBot cfg mp = bracket connect hClose ready
         let port = PortNumber $ fromIntegral $ maybe 6667 read $ cfg "port"
         h <- connectTo server port
         dontBuffer h
+        hSetBinaryMode h True
         return h
     notify = bracket_ (printf "Connecting to %s ... " server)
                       (putStrLn "done.")

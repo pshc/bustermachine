@@ -23,9 +23,13 @@ logger dir msg chs = do
     go t line (ch, cs) = when inChannel $ do
         chan <- pretty ch
         let filename = dir ++ "/" ++ chan "" ++ "." ++ dateStr t ++ ".log"
-        io $ appendFile filename $ (timeStr t ++) . line $ "\n"
+        io $ writeLine filename
       where
         inChannel = filterByChan (`Map.member` chanUsers cs) False msg ch
+        writeLine fnm = do h <- openFile fnm AppendMode
+                           hSetBinaryMode h True
+                           hPutStr h $ (timeStr t ++) . line $ "\n"
+                           hClose h
 
 format' = formatTime defaultTimeLocale . iso8601DateFormat
 dateStr = format' Nothing
