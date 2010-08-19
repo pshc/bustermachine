@@ -71,9 +71,4 @@ prettyMsg (src, msg) who = case msg of
     maybeParen      = maybe id paren
     concatWords f m = f . (' ':) . s m
 
-instance Pretty (User, Chat) where
-  pretty (u, c) = pretty u >>= \nick -> case c of
-    Chat t   -> return $ ('<':) . nick . ("> " ++) . showString t
-    Action t -> return $ ("* " ++) . nick . (' ':) . showString t
-
 -- vi: set sw=4 ts=4 sts=4 tw=79 ai et nocindent:

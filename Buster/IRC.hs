@@ -33,7 +33,7 @@ initUsers nick = let (self, info) = (UserID 0, UserInfo nick "" "")
                                  idCtr = 1 }
 
 instance Context Users where
-  contextLookup k = (\us -> userNick `fmap` Map.lookup k us) `fmap` gets users
+  contextLookup k = Map.lookup k `fmap` gets users
 
 type MessageProcessor = ServerMsg -> Users ()
 data ChannelState = ChannelState { chanTopic :: Maybe String,

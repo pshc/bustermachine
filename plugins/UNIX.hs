@@ -6,12 +6,12 @@ import Data.Time.Clock
 main = do uptime <- uptime `fmap` getCurrentTime
           pluginMain $ commandPlugin [("uptime", uptime), ("quit", quit)]
   where
-    uptime zero ch _ = do
+    uptime zero _ ch _ = do
       now <- io getCurrentTime
       respondChat ch ("Uptime: " ++ niceTime (diffUTCTime now zero) "")
 
     -- TODO: Remote termination & permissions system
-    quit ch _ = respondChat ch "I'll never stop."
+    quit _ ch _ = respondChat ch "I'll never stop."
  
 niceTime td = (++) . join . intersperse " " . filter (not . null) . map f $
       [(years      , "y"), (months % 12, "m"),

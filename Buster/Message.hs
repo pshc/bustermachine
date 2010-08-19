@@ -1,3 +1,4 @@
+{-# LANGUAGE FlexibleInstances #-}
 module Buster.Message where
 
 import Buster.Misc
@@ -6,7 +7,7 @@ import Data.Map (Map)
 import qualified Data.Map as Map
 
 class (Monad m) => Context m where
-  contextLookup :: User -> m (Maybe String)
+  contextLookup :: User -> m (Maybe UserInfo)
 
 --instance (MonadTrans t, Context m, Monad (t m)) => Context (t m) where
 --  contextLookup = lift . contextLookup
@@ -36,8 +37,11 @@ data UserInfo = UserInfo { userNick, userUser, userHost :: String }
                 deriving (Read, Show)
 
 instance Pretty User where
-  pretty u = do nm <- contextLookup u
-                return $ maybe ("???" ++) showString nm
+  pretty u = do ui <- contextLookup u
+                return $ maybe ("???" ++) (showString . userNick) ui
+
+instance Pretty UserInfo where
+  pretty (UserInfo n u h) = return $ (n ++) . ('!':) . (u ++) . ('@':) . (h ++)
 
 data UsersState = UsersState { selfUser :: User,
                                users :: Map User UserInfo,
@@ -53,6 +57,11 @@ instance Pretty Target where
 data Priv = Op | Voice | Regular deriving (Read, Show)
 
 data Chat = Chat String | Action String deriving (Read, Show)
+
+instance Pretty (User, Chat) where
+  pretty (u, c) = pretty u >>= \nick -> case c of
+    Chat t   -> return $ ('<':) . nick . ("> " ++) . showString t
+    Action t -> return $ ("* " ++) . nick . (' ':) . showString t
 
 filterByChan :: (User -> Bool) -> Bool -> ServerMsg -> Chan -> Bool
 filterByChan inChan extra (src, msg) ch = case msg of

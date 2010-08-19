@@ -1,7 +1,7 @@
 {-# LANGUAGE DeriveDataTypeable, RecordWildCards, TypeSynonymInstances,
              ViewPatterns #-}
 module Buster.Plugin (Machine, Plugin,
-       commandPlugin, pluginMain, processorPlugin,
+       commandPlugin, hybridPlugin, pluginMain, processorPlugin,
        io, lookupConfig, queryChans, queryUsers, respondChat,
        setupMachine
        ) where
@@ -28,8 +28,9 @@ import System.Posix
 
 type Plugin = ReaderT PluginState IO
 
-commandPlugin cmds = PluginImpl (Map.fromList cmds) Nothing
-processorPlugin p  = PluginImpl (Map.empty) (Just p)
+commandPlugin cmds  = PluginImpl (Map.fromList cmds) Nothing
+processorPlugin p   = PluginImpl (Map.empty) (Just p)
+hybridPlugin cmds p = PluginImpl (Map.fromList cmds) (Just p)
 
 pluginMain :: PluginImpl -> IO ()
 pluginMain (PluginImpl {..}) = do
@@ -41,9 +42,10 @@ pluginMain (PluginImpl {..}) = do
   where
     loop = recv' >>= either invalidReq ((>> loop) . doReq)
 
-    doReq (ReqProcess msg)    = check ($ msg) pluginProcessor
-    doReq (ReqCommand t ch a) = check ($ (ch, a)) $ uncurry `fmap`
-                                      Map.lookup (lower t) pluginCommands
+    doReq (ReqProcess msg)             = check ($ msg) pluginProcessor
+    doReq (ReqCommand cmd src ch args) =
+        check (\f -> f src ch args) (lower cmd `Map.lookup` pluginCommands)
+
     check f = maybe (io $ throwIO ReqUnsupportedException)
                     ((>> send' EndResponse) . f)
 
@@ -74,11 +76,11 @@ queryUsers ch = do send' $ UsersQuery ch
     gotIt _                        = return Nothing
 
 instance Context Plugin where
-  contextLookup user = do send' (NickLookup user)
+  contextLookup user = do send' (UserLookup user)
                           recv' >>= either invalidReq gotIt
     where
-      gotIt (ReqNick u n) | u == user = return n
-      gotIt _                         = return Nothing
+      gotIt (ReqUser u ui) | u == user = return ui
+      gotIt _                          = return Nothing
 
 io = liftIO :: IO a -> Plugin a
 
@@ -176,69 +178,72 @@ data API = API {
     apiHasProcessor :: Bool
 } deriving (Read, Show)
 
-data MachineReq = ReqProcess ServerMsg | ReqCommand String Target String
+data MachineReq = ReqProcess ServerMsg | ReqCommand String User Target String
                   | ReqConfig String (Maybe String)
                   | ReqUsers Chan (Maybe (Map User Priv))
                   | ReqChans (Map Chan ChannelState)
-                  | ReqNick User (Maybe String)
+                  | ReqUser User (Maybe UserInfo)
                   deriving (Read, Show)
 
+type Respond = ReaderT Target Users
+respond :: String -> Respond ()
+respond msg = ask >>= (lift . flip privMsg msg)
+
 dispatchPlugins :: IORef Machine -> MessageProcessor
-dispatchPlugins mRef msg = do
-    mach@(Machine {..}) <- liftIO $ readIORef mRef
-    mapM_ doProc [p | p <- Map.elems machPlugins, apiHasProcessor (ipcAPI p)]
-    case snd msg of
-      PrivMsg t (Chat ('!':s)) -> do t' <- reflect (fst msg) t
-                                     doCmd machPlugins t' s (words s)
+dispatchPlugins mRef (src, msg) = do
+    Machine { machPlugins = ps } <- liftIO $ readIORef mRef
+    mapM_ doProc [p | p <- Map.elems ps, apiHasProcessor (ipcAPI p)]
+    case msg of
+      PrivMsg t (Chat ('!':s)) -> do respondee <- reflect t
+                                     runReaderT (doCmd ps t s (words s))
+                                                respondee
       _                        -> return ()
   where
-    reflect _   (Chan ch) = return $ Chan ch
-    reflect src _         = return $ User src
+    reflect (Chan ch) = return $ Chan ch
+    reflect _         = return $ User src
 
-    doProc p = do send (ipcWrite p) (ReqProcess msg)
+    doProc p = do send (ipcWrite p) (ReqProcess (src, msg))
                   handleResponses p
 
-    doCmd ps t _ ((lower -> c):ws)
-      | c `elem` builtinCmds = builtinCmd ps t mRef c ws
-    doCmd ps t s (c:_)       = eval ps t (lower c)
-                                    (stripLeft $ drop (length c) s)
-    doCmd _  t _ []          = privMsg t "Command expected."
+    doCmd ps _ _ ((lower -> c):ws)
+      | c `elem` builtinCmds = builtinCmd ps mRef c ws
+    doCmd ps t s ((lower -> c):_) = case Map.fold (collectPlugins c) [] ps of
+        []  -> respond ("No such command " ++ c ++ ".")
+        [p] -> lift $ do let args = stripLeft $ drop (length c) s
+                         send (ipcWrite p) (ReqCommand c src t args)
+                         handleResponses p
+        ps  -> respond ("Ambiguous command " ++ c ++ ".") -- TODO
+      where
+        collectPlugins w p cs | w `Set.member` apiCommandSet (ipcAPI p) = p:cs
+                              | otherwise                               = cs
+    doCmd _ _ _ []           = respond "Command expected."
 
 builtinCmds = ["list", "load", "reload", "unload"]
-builtinCmd ps t _ "list" [] =
+builtinCmd ps _ "list" [] =
     let ps' = Set.toList $ Set.insert "Plugins" (Map.keysSet ps)
-    in privMsg t (intercalate ", " ps')
-builtinCmd _  t _ cmd ["Plugins"] = privMsg t $ case cmd of -- fake meta plugin
+    in respond (intercalate ", " ps')
+builtinCmd _ _ cmd ["Plugins"] = respond $ case cmd of -- fake meta plugin
     "list"   -> showCmdList builtinCmds
     "load"   -> "Plugins is already loaded."
     "reload" -> "Cannot reload Plugins."
     "unload" -> "Cannot unload Plugins."
-builtinCmd ps t r c [nm] = case (c, nm `Map.lookup` ps) of
-    ("list", Just p)   -> privMsg t $ ipcCmdList p
+builtinCmd ps r c [nm] = case (c, nm `Map.lookup` ps) of
+    ("list", Just p)   -> respond $ ipcCmdList p
     ("load", Nothing)  -> loadIt
-    ("load", Just _)   -> privMsg t (nm ++ " is already loaded.")
+    ("load", Just _)   -> respond (nm ++ " is already loaded.")
     ("reload", Just _) -> liftIO (unloadPlugin r nm) >> loadIt
     ("unload", Just _) -> liftIO (unloadPlugin r nm) >> gotcha
-    _                  -> privMsg t $ "No such plugin '" ++ nm ++ ".'"
+    _                  -> respond $ "No such plugin '" ++ nm ++ ".'"
   where
     loadIt = do r <- liftIO $ loadPlugin r nm
-                if r then gotcha else privMsg t "Plugin load failed."
-    gotcha = privMsg t "Gotcha."
+                if r then gotcha else respond "Plugin load failed."
+    gotcha = respond "Gotcha."
     ipcCmdList = showCmdList . Set.toList . apiCommandSet . ipcAPI
 
-builtinCmd _ t _ _ _ = privMsg t "Plugin expected."
+builtinCmd _ _ _ _ = respond "Plugin expected."
 
 showCmdList []   = "That plugin has no commands."
 showCmdList cmds = (intercalate ", " cmds)
-
-eval ps t cmd arg = case Map.fold (collectPlugins $ lower cmd) [] ps of
-    []  -> privMsg t ("No such command " ++ cmd ++ ".")
-    [p] -> do send (ipcWrite p) (ReqCommand cmd t arg)
-              handleResponses p
-    ps  -> privMsg t ("Ambiguous command " ++ cmd ++ ".") -- TODO
-  where
-    collectPlugins w p cs | w `Set.member` apiCommandSet (ipcAPI p) = p:cs
-                          | otherwise                               = cs
 
 send :: (MonadIO m, Show a) => Handle -> a -> m ()
 send h = liftIO . (>> hFlush h) . hPutStrLn h . show
@@ -268,7 +273,7 @@ doResponse w q = case q of
     UsersQuery ch  -> lift (getChan ch) >>= reply . ReqUsers ch
                                                   . fmap chanUsers
     ChansQuery     -> lift getChans >>= reply . ReqChans
-    NickLookup u   -> lookupUser u >>= reply. ReqNick u . fmap userNick
+    UserLookup u   -> lookupUser u >>= reply . ReqUser u
   where
     formatChat (Chat s)   = s
     formatChat (Action s) = "\001ACTION " ++ s ++ "\001"
@@ -281,7 +286,7 @@ privMsg t s = do dest <- pretty t
 -- PLUGIN-SIDE INTERNALS
 
 data PluginImpl = PluginImpl {
-    pluginCommands :: Map String (Target -> String -> Plugin ()),
+    pluginCommands :: Map String (User -> Target -> String -> Plugin ()),
     pluginProcessor :: Maybe (ServerMsg -> Plugin ())
 }
 
@@ -290,7 +295,7 @@ data PluginState = PluginState {
 }
 
 data PluginResp = ClientMsg IRCMsg | ConfigLookup String | UsersQuery Chan
-                  | ChansQuery | NickLookup User | EndResponse
+                  | ChansQuery | UserLookup User | EndResponse
                   deriving (Read, Show)
 
 send' :: PluginResp -> Plugin ()
