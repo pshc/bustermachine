@@ -6,14 +6,14 @@ import Control.Monad.State
 import Data.Map (Map)
 import qualified Data.Map as Map
 
-class (Monad m) => Context m where
+class (Functor m, Monad m) => Context m where
   contextLookup :: User -> m (Maybe UserInfo)
 
 --instance (MonadTrans t, Context m, Monad (t m)) => Context (t m) where
 --  contextLookup = lift . contextLookup
 
 class Pretty a where
-  pretty :: (Context m) => a -> m ShowS
+  pretty :: (Context m) => a -> m String
 
 data IRCMsg = Away (Maybe String) | Invite Chan | Join Chan
               | Kick Chan User (Maybe String) | Mode Chan [String]
@@ -28,9 +28,9 @@ data Chan = (:#) String | (:&) String | (:+) String
             deriving (Eq, Ord, Read, Show)
 
 instance Pretty Chan where
-  pretty ((:#) s) = return $ showString ('#':s)
-  pretty ((:&) s) = return $ showString ('&':s)
-  pretty ((:+) s) = return $ showString ('+':s)
+  pretty ((:#) s) = return ('#':s)
+  pretty ((:&) s) = return ('&':s)
+  pretty ((:+) s) = return ('+':s)
 
 data User = UserID Int deriving (Eq, Ord, Read, Show)
 data UserInfo = UserInfo { userNick, userUser, userHost :: String }
@@ -38,10 +38,10 @@ data UserInfo = UserInfo { userNick, userUser, userHost :: String }
 
 instance Pretty User where
   pretty u = do ui <- contextLookup u
-                return $ maybe ("???" ++) (showString . userNick) ui
+                return $ maybe "???" userNick ui
 
 instance Pretty UserInfo where
-  pretty (UserInfo n u h) = return $ (n ++) . ('!':) . (u ++) . ('@':) . (h ++)
+  pretty (UserInfo n u h) = return $ n ++ "!" ++ u ++ "@" ++ h
 
 data UsersState = UsersState { selfUser :: User,
                                users :: Map User UserInfo,
@@ -60,8 +60,8 @@ data Chat = Chat String | Action String deriving (Read, Show)
 
 instance Pretty (User, Chat) where
   pretty (u, c) = pretty u >>= \nick -> case c of
-    Chat t   -> return $ ('<':) . nick . ("> " ++) . showString t
-    Action t -> return $ ("* " ++) . nick . (' ':) . showString t
+    Chat t   -> return $ '<':nick ++ "> " ++ t
+    Action t -> return $ "* " ++ nick ++ " " ++ t
 
 filterByChan :: (User -> Bool) -> Bool -> ServerMsg -> Chan -> Bool
 filterByChan inChan extra (src, msg) ch = case msg of

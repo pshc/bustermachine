@@ -38,14 +38,14 @@ showQuotes qs = intercalate " " $ map extract qs
 grab ref grabber ch (words -> [nick]) | not (null nick) = do
     db <- io $ readIORef ref
     Just grabberUi <- contextLookup grabber
-    addedBy <- fmap ($ "") (pretty grabberUi)
+    addedBy <- pretty grabberUi
     maybe (respondChat ch "No stored messages by anyone with that nick.")
           (doGrab addedBy) (nick `Map.lookup` db)
   where
     doGrab addedBy _
       | addedBy == nick = respondChat ch "Illegal self-grab."
     doGrab addedBy (ui, quote, addedAt) = do
-        hostmask <- ($ "") `fmap` pretty ui
+        hostmask <- pretty ui
         let params = [toSql (userNick ui), toSql hostmask, toSql addedBy,
                       toSql addedAt, toSql quote]
         ok <- io $ withDB (\c -> do res <- run c insert params
@@ -60,7 +60,7 @@ grab _ _ ch _ = respondChat ch "Please specify one nickname."
 
 grabTracker ref (user, PrivMsg (Chan ch) chat) = do
     userInfo <- contextLookup user
-    quote <- ($ "") `fmap` pretty (user, chat)
+    quote <- pretty (user, chat)
     maybe (return ()) (io . trackGrab quote) userInfo
   where
     trackGrab q ui = do now <- epochTime

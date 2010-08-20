@@ -281,7 +281,7 @@ doResponse w q = case q of
 
 privMsg :: Target -> String -> Users ()
 privMsg t s = do dest <- pretty t
-                 lift $ write "PRIVMSG" [dest "", s]
+                 lift $ write "PRIVMSG" [dest, s]
 
 -- PLUGIN-SIDE INTERNALS
 
