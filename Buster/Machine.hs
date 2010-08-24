@@ -118,13 +118,12 @@ dispatchPlugins mRef (src, msg) = do
     Machine { machPlugins = ps } <- liftIO $ readIORef mRef
     mapM_ doProc [p | p <- Map.elems ps, apiHasProcessor (ipcAPI p)]
     case msg of
-      PrivMsg t (Chat ('!':s)) -> do respondee <- reflect t
-                                     runReaderT (doCmd ps t s (words s))
-                                                respondee
+      PrivMsg t (Chat ('!':s)) -> runReaderT (doCmd ps t s (words s))
+                                             (reflect t)
       _                        -> return ()
   where
-    reflect (Chan ch) = return $ Chan ch
-    reflect _         = return $ User src
+    reflect ch@(Chan _) = ch
+    reflect _           = User src
 
     doProc p = do send (ipcWrite p) (ReqProcess (src, msg))
                   handleResponses p
