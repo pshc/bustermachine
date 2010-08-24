@@ -5,12 +5,14 @@ import Buster.Internal
 import Buster.IRC
 import Buster.Message
 import Buster.Misc
+import Control.Concurrent
 import Control.Exception
 import Control.Monad.Reader
-import Data.IORef
+import Control.Monad.State
 import Data.List
 import Data.Map (Map)
 import qualified Data.Map as Map
+import Data.Maybe
 import Data.Set (Set)
 import qualified Data.Set as Set
 import System.IO
@@ -20,15 +22,16 @@ import System.Timeout
 setupMachine :: [String] -> IO MessageProcessor
 setupMachine ps = do installHandler openEndedPipe Ignore Nothing
                      getProcessID >>= createProcessGroup
-                     r <- newIORef (Machine Map.empty)
+                     m <- newMVar (Machine Map.empty)
                      installHandler processStatusChanged
-                                    (Catch $ cleanupZombies r) Nothing
-                     mapM_ (loadPlugin r) ps
-                     return $ dispatchPlugins r
+                                    (Catch $ modifyMVar_ m cleanupZombies)
+                                    Nothing
+                     mapM_ (modifyMVar m . loadPlugin) ps
+                     return $ dispatchPlugins m
   where
-    cleanupZombies r = do mach@(Machine {..}) <- readIORef r
-                          m' <- cleanups (Map.assocs machPlugins) machPlugins
-                          writeIORef r $ mach { machPlugins = m' }
+    cleanupZombies mach@(Machine {..}) = do
+        ps <- cleanups (Map.assocs machPlugins) machPlugins
+        return $ mach { machPlugins = ps }
 
     cleanups []           m = return m
     cleanups ((nm, p):ps) m = getProcessStatus False True (ipcPID p)
@@ -46,15 +49,16 @@ data Machine = Machine {
    machPlugins :: Map String PluginIPC
 }
 
-loadPlugin :: IORef Machine -> String -> IO Bool
-loadPlugin ref nm = do
-    mach@(Machine {..}) <- readIORef ref
+loadPlugin :: String -> Machine -> IO (Machine, Bool)
+loadPlugin nm mach@(Machine {..}) = do
     exists <- checkExists
-    if not exists then return False else
+    if not exists then failure else
        if nm `Map.member` machPlugins
-         then putStrLn (nm ++ " is already loaded!") >> return False
-         else doLoad >>= maybe (return False) (addAPI mach)
+         then putStrLn (nm ++ " is already loaded!") >> failure
+         else doLoad >>= maybe failure addAPI
   where
+    failure = return (mach, False)
+
     doLoad = do (pr, Fd cw) <- createPipe
                 (Fd cr, pw) <- createPipe
                 gid <- getProcessGroupID
@@ -77,9 +81,8 @@ loadPlugin ref nm = do
                   signalProcess softwareTermination pid
                   return Nothing
 
-    addAPI m a = do let m' = Map.insert nm a (machPlugins m)
-                    writeIORef ref $ m { machPlugins = m' }
-                    return True
+    addAPI a = do let ps = Map.insert nm a machPlugins
+                  return (mach { machPlugins = ps }, True)
 
     dir = "plugins/bin/"
     checkExists = bracket (openDirStream dir) closeDirStream go
@@ -90,15 +93,14 @@ loadPlugin ref nm = do
                              _ | fp == nm  -> return True
                                | otherwise -> go s
 
-unloadPlugin r nm = do mach <- readIORef r
-                       maybe (return ()) (go mach)
-                             (nm `Map.lookup` machPlugins mach)
+unloadPlugin nm mach = do maybe (return mach) go
+                                (nm `Map.lookup` machPlugins mach)
   where
-    go m p = do writeIORef r $ m {machPlugins = nm `Map.delete` machPlugins m}
-                killPlugin p
-                --- XXX: Could block indefinitely from a malicious plugin
-                getProcessStatus True True (ipcPID p)
-                return ()
+    go p = do let ps' = nm `Map.delete` machPlugins mach
+              killPlugin p
+              --- XXX: Could block indefinitely from a malicious plugin
+              getProcessStatus True True (ipcPID p)
+              return $ mach { machPlugins = ps' }
 
 killPlugin = signalProcess softwareTermination . ipcPID
 
@@ -113,9 +115,9 @@ type RelayBack = ReaderT Target Users
 relayBack :: String -> RelayBack ()
 relayBack msg = ask >>= (lift . flip privMsg msg)
 
-dispatchPlugins :: IORef Machine -> MessageProcessor
-dispatchPlugins mRef (src, msg) = do
-    Machine { machPlugins = ps } <- liftIO $ readIORef mRef
+dispatchPlugins :: MVar Machine -> MessageProcessor
+dispatchPlugins mv (src, msg) = do
+    Machine { machPlugins = ps } <- liftIO $ readMVar mv
     mapM_ doProc [p | p <- Map.elems ps, apiHasProcessor (ipcAPI p)]
     case msg of
       PrivMsg t (Chat ('!':s)) -> runReaderT (doCmd ps t s (words s))
@@ -129,12 +131,12 @@ dispatchPlugins mRef (src, msg) = do
                   handleResponses p
 
     doCmd ps _ _ ((lower -> c):ws)
-      | c `elem` builtinCmds = builtinCmd ps mRef c ws
+      | c `elem` builtinCmds = builtinCmd ps mv c ws
     doCmd ps t s (c:_) = case Map.fold (collectPlugins $ IString c) [] ps of
         []  -> relayBack ("No such command " ++ c ++ ".")
-        [p] -> lift $ do let args = stripLeft $ drop (length c) s
-                         send (ipcWrite p) (ReqCommand (IString c) src t args)
-                         handleResponses p
+        [p] -> do let args = stripLeft $ drop (length c) s
+                  lift $ send (ipcWrite p) (ReqCommand (IString c) src t args)
+                  forkResponseHandler p
         ps  -> relayBack ("Ambiguous command " ++ c ++ ".") -- TODO
       where
         collectPlugins w p cs | w `Set.member` apiCommandSet (ipcAPI p) = p:cs
@@ -150,15 +152,15 @@ builtinCmd _ _ cmd ["Plugins"] = relayBack $ case cmd of -- fake meta plugin
     "load"   -> "Plugins is already loaded."
     "reload" -> "Cannot reload Plugins."
     "unload" -> "Cannot unload Plugins."
-builtinCmd ps r c [nm] = case (c, nm `Map.lookup` ps) of
+builtinCmd ps mv c [nm] = case (c, nm `Map.lookup` ps) of
     ("list", Just p)   -> relayBack $ ipcCmdList p
     ("load", Nothing)  -> loadIt
     ("load", Just _)   -> relayBack (nm ++ " is already loaded.")
-    ("reload", Just _) -> liftIO (unloadPlugin r nm) >> loadIt
-    ("unload", Just _) -> liftIO (unloadPlugin r nm) >> gotcha
+    ("reload", Just _) -> liftIO (modifyMVar_ mv $ unloadPlugin nm) >> loadIt
+    ("unload", Just _) -> liftIO (modifyMVar_ mv $ unloadPlugin nm) >> gotcha
     _                  -> relayBack $ "No such plugin '" ++ nm ++ ".'"
   where
-    loadIt = do r <- liftIO $ loadPlugin r nm
+    loadIt = do r <- liftIO $ modifyMVar mv (loadPlugin nm)
                 if r then gotcha else relayBack "Plugin load failed."
     gotcha = relayBack "Gotcha."
     ipcCmdList = showCmdList . extract . Set.toList . apiCommandSet . ipcAPI
@@ -168,6 +170,23 @@ builtinCmd _ _ _ _ = relayBack "Plugin expected."
 
 showCmdList []   = "That plugin has no commands."
 showCmdList cmds = (intercalate ", " cmds)
+
+forkResponseHandler :: PluginIPC -> RelayBack ()
+forkResponseHandler p = do
+    -- TEMP: I N C E P T I O N
+    a <- lift (lift get)
+    b <- lift get
+    c <- get
+    liftIO $ forkIO $ do r <- (5*1000000) `timeout` execStateT
+                                                     (execStateT
+                                                       (execStateT go
+                                                        c)
+                                                      b)
+                                                    a
+                         when (isNothing r) $ putStrLn "Command timed out."
+    return ()
+  where
+    go = lift $ handleResponses p
 
 handleResponses :: PluginIPC -> Users ()
 handleResponses p@(PluginIPC {..}) = handleOne
