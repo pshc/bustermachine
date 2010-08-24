@@ -5,4 +5,5 @@ license: MIT
 homepage: http://github.com/pshc/bustermachine
 build-type: Simple
 build-depends: base, containers, mtl, network, unix
-exposed-modules: Buster.IRC, Buster.Message, Buster.Misc, Buster.Plugin
+exposed-modules: Buster.Internal, Buster.IRC, Buster.Machine, Buster.Message,
+                 Buster.Misc, Buster.Plugin

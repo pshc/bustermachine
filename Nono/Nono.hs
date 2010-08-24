@@ -1,7 +1,7 @@
 
 import Buster.IRC
 import Buster.Misc
-import Buster.Plugin
+import Buster.Machine
 import Config
 import System.IO
 
