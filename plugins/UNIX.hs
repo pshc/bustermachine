@@ -17,8 +17,8 @@ main = do uptime <- uptime `fmap` getCurrentTime
     quit _ = respond "I'll never stop."
 
     loadAverage _ = do u <- liftIO $ readProcess "uptime" [] ""
-                       let Just l = isPrefixOf "average:" `find` tails u
-                       respond $ unwords $ words (drop 8 l)
+                       let Just l = isPrefixOf "average" `find` tails u
+                       respond $ unwords $ words (drop 9 l)
  
 niceTime td = (++) . join . intersperse " " . filter (not . null) . map f $
       [(years      , "y"), (months % 12, "m"),
