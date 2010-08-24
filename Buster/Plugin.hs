@@ -31,7 +31,7 @@ type Plugin = ReaderT PluginState IO
 type Cmd = ReaderT Invocation Plugin
 
 data PluginImpl = PluginImpl {
-    pluginCommands :: Map String (String -> Cmd ()),
+    pluginCommands :: Map IString (String -> Cmd ()),
     pluginProcessor :: Maybe (ServerMsg -> Plugin ())
 }
 
@@ -52,9 +52,11 @@ data ReqException = ReqParseException String | ReqUnsupportedException
                     deriving (Show, Typeable)
 instance Exception ReqException
 
-commandPlugin cmds  = PluginImpl (Map.fromList cmds) Nothing
+commandPlugin cmds  = PluginImpl (cmdMap cmds) Nothing
 processorPlugin p   = PluginImpl (Map.empty) (Just p)
-hybridPlugin cmds p = PluginImpl (Map.fromList cmds) (Just p)
+hybridPlugin cmds p = PluginImpl (cmdMap cmds) (Just p)
+
+cmdMap cs = Map.fromList [(IString k, v) | (k, v) <- cs]
 
 pluginMain :: PluginImpl -> IO ()
 pluginMain (PluginImpl {..}) = do
@@ -69,7 +71,7 @@ pluginMain (PluginImpl {..}) = do
     doReq (ReqProcess msg)             = check ($ msg) pluginProcessor
     doReq (ReqCommand cmd src ch args) =
         check (\f -> f args `runReaderT` Invocation src ch)
-              (lower cmd `Map.lookup` pluginCommands)
+              (cmd `Map.lookup` pluginCommands)
 
     check f = maybe (liftIO $ throwIO ReqUnsupportedException)
                     ((>> send' EndResponse) . f)
@@ -212,11 +214,11 @@ data PluginIPC = PluginIPC {
 }
 
 data API = API {
-    apiCommandSet :: Set String,
+    apiCommandSet :: Set IString,
     apiHasProcessor :: Bool
 } deriving (Read, Show)
 
-data MachineReq = ReqProcess ServerMsg | ReqCommand String User Target String
+data MachineReq = ReqProcess ServerMsg | ReqCommand IString User Target String
                   | ReqConfig String (Maybe String)
                   | ReqUsers Chan (Maybe (Map User Priv))
                   | ReqChans (Map Chan ChannelState)
@@ -246,10 +248,10 @@ dispatchPlugins mRef (src, msg) = do
 
     doCmd ps _ _ ((lower -> c):ws)
       | c `elem` builtinCmds = builtinCmd ps mRef c ws
-    doCmd ps t s ((lower -> c):_) = case Map.fold (collectPlugins c) [] ps of
+    doCmd ps t s (c:_) = case Map.fold (collectPlugins $ IString c) [] ps of
         []  -> relayBack ("No such command " ++ c ++ ".")
         [p] -> lift $ do let args = stripLeft $ drop (length c) s
-                         send (ipcWrite p) (ReqCommand c src t args)
+                         send (ipcWrite p) (ReqCommand (IString c) src t args)
                          handleResponses p
         ps  -> relayBack ("Ambiguous command " ++ c ++ ".") -- TODO
       where
@@ -277,7 +279,8 @@ builtinCmd ps r c [nm] = case (c, nm `Map.lookup` ps) of
     loadIt = do r <- liftIO $ loadPlugin r nm
                 if r then gotcha else relayBack "Plugin load failed."
     gotcha = relayBack "Gotcha."
-    ipcCmdList = showCmdList . Set.toList . apiCommandSet . ipcAPI
+    ipcCmdList = showCmdList . extract . Set.toList . apiCommandSet . ipcAPI
+    extract = map (\(IString s) -> s)
 
 builtinCmd _ _ _ _ = relayBack "Plugin expected."
 

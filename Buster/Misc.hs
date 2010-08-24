@@ -13,6 +13,12 @@ stripIPrefix _ _ = Nothing
 
 lower = map toLower
 
+newtype IString = IString String deriving (Read, Show)
+instance Eq IString where
+  IString a == IString b = lower a == lower b
+instance Ord IString where
+  IString a `compare` IString b = lower a `compare` lower b
+
 dontBuffer = flip hSetBuffering NoBuffering
 
 isChan (x:_) = (x == '#' || x == '&' || x == '+')
