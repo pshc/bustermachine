@@ -1,8 +1,9 @@
 {-# LANGUAGE DeriveDataTypeable, RecordWildCards, TypeSynonymInstances,
              ViewPatterns #-}
-module Buster.Plugin (Machine, Plugin,
+module Buster.Plugin (Cmd, Machine, Plugin,
        commandPlugin, hybridPlugin, pluginMain, processorPlugin,
-       io, lookupConfig, queryChans, queryUsers, respondChat,
+       invoker, lookupConfig, medium, queryChans, queryUsers,
+       respond, sendChat,
        setupMachine
        ) where
 
@@ -27,6 +28,29 @@ import System.Posix
 -- FOR PLUGIN USE
 
 type Plugin = ReaderT PluginState IO
+type Cmd = ReaderT Invocation Plugin
+
+data PluginImpl = PluginImpl {
+    pluginCommands :: Map String (String -> Cmd ()),
+    pluginProcessor :: Maybe (ServerMsg -> Plugin ())
+}
+
+data PluginState = PluginState {
+    pluginRead, pluginWrite :: Handle
+}
+
+data Invocation = Invocation User Target
+
+invoker = (\(Invocation u _) -> u) `fmap` ask :: Cmd User
+medium  = (\(Invocation _ m) -> m) `fmap` ask :: Cmd Target
+
+data PluginResp = ClientMsg IRCMsg | ConfigLookup String | UsersQuery Chan
+                  | ChansQuery | UserLookup User | EndResponse
+                  deriving (Read, Show)
+
+data ReqException = ReqParseException String | ReqUnsupportedException
+                    deriving (Show, Typeable)
+instance Exception ReqException
 
 commandPlugin cmds  = PluginImpl (Map.fromList cmds) Nothing
 processorPlugin p   = PluginImpl (Map.empty) (Just p)
@@ -44,9 +68,10 @@ pluginMain (PluginImpl {..}) = do
 
     doReq (ReqProcess msg)             = check ($ msg) pluginProcessor
     doReq (ReqCommand cmd src ch args) =
-        check (\f -> f src ch args) (lower cmd `Map.lookup` pluginCommands)
+        check (\f -> f args `runReaderT` Invocation src ch)
+              (lower cmd `Map.lookup` pluginCommands)
 
-    check f = maybe (io $ throwIO ReqUnsupportedException)
+    check f = maybe (liftIO $ throwIO ReqUnsupportedException)
                     ((>> send' EndResponse) . f)
 
     parsePipe = (>>= fdToHandle) . fmap (Fd . read . fromJust) . getEnv
@@ -54,8 +79,11 @@ pluginMain (PluginImpl {..}) = do
     handleError :: ReqException -> IO ()
     handleError = print -- and leave loop
 
-respondChat :: Target -> String -> Plugin ()
-respondChat t s = send' $ ClientMsg $ PrivMsg t (Chat s)
+respond :: String -> Cmd ()
+respond s = medium >>= lift . flip sendChat s
+
+sendChat :: Target -> String -> Plugin ()
+sendChat t s = send' $ ClientMsg $ PrivMsg t (Chat s)
 
 lookupConfig :: String -> Plugin (Maybe String)
 lookupConfig s = do send' $ ConfigLookup s
@@ -82,7 +110,17 @@ instance Context Plugin where
       gotIt (ReqUser u ui) | u == user = return ui
       gotIt _                          = return Nothing
 
-io = liftIO :: IO a -> Plugin a
+instance Context Cmd where
+  contextLookup = lift . contextLookup
+
+send' :: PluginResp -> Plugin ()
+send' = (asks pluginWrite >>=) . flip send
+
+recv' :: Plugin (Either String MachineReq)
+recv' = asks pluginRead >>= recv
+
+invalidReq = liftIO . throwIO . ReqParseException
+
 
 -- FOR NONO USE
 
@@ -185,9 +223,10 @@ data MachineReq = ReqProcess ServerMsg | ReqCommand String User Target String
                   | ReqUser User (Maybe UserInfo)
                   deriving (Read, Show)
 
-type Respond = ReaderT Target Users
-respond :: String -> Respond ()
-respond msg = ask >>= (lift . flip privMsg msg)
+type RelayBack = ReaderT Target Users
+
+relayBack :: String -> RelayBack ()
+relayBack msg = ask >>= (lift . flip privMsg msg)
 
 dispatchPlugins :: IORef Machine -> MessageProcessor
 dispatchPlugins mRef (src, msg) = do
@@ -208,39 +247,39 @@ dispatchPlugins mRef (src, msg) = do
     doCmd ps _ _ ((lower -> c):ws)
       | c `elem` builtinCmds = builtinCmd ps mRef c ws
     doCmd ps t s ((lower -> c):_) = case Map.fold (collectPlugins c) [] ps of
-        []  -> respond ("No such command " ++ c ++ ".")
+        []  -> relayBack ("No such command " ++ c ++ ".")
         [p] -> lift $ do let args = stripLeft $ drop (length c) s
                          send (ipcWrite p) (ReqCommand c src t args)
                          handleResponses p
-        ps  -> respond ("Ambiguous command " ++ c ++ ".") -- TODO
+        ps  -> relayBack ("Ambiguous command " ++ c ++ ".") -- TODO
       where
         collectPlugins w p cs | w `Set.member` apiCommandSet (ipcAPI p) = p:cs
                               | otherwise                               = cs
-    doCmd _ _ _ []           = respond "Command expected."
+    doCmd _ _ _ []           = relayBack "Command expected."
 
 builtinCmds = ["list", "load", "reload", "unload"]
 builtinCmd ps _ "list" [] =
     let ps' = Set.toList $ Set.insert "Plugins" (Map.keysSet ps)
-    in respond (intercalate ", " ps')
-builtinCmd _ _ cmd ["Plugins"] = respond $ case cmd of -- fake meta plugin
+    in relayBack (intercalate ", " ps')
+builtinCmd _ _ cmd ["Plugins"] = relayBack $ case cmd of -- fake meta plugin
     "list"   -> showCmdList builtinCmds
     "load"   -> "Plugins is already loaded."
     "reload" -> "Cannot reload Plugins."
     "unload" -> "Cannot unload Plugins."
 builtinCmd ps r c [nm] = case (c, nm `Map.lookup` ps) of
-    ("list", Just p)   -> respond $ ipcCmdList p
+    ("list", Just p)   -> relayBack $ ipcCmdList p
     ("load", Nothing)  -> loadIt
-    ("load", Just _)   -> respond (nm ++ " is already loaded.")
+    ("load", Just _)   -> relayBack (nm ++ " is already loaded.")
     ("reload", Just _) -> liftIO (unloadPlugin r nm) >> loadIt
     ("unload", Just _) -> liftIO (unloadPlugin r nm) >> gotcha
-    _                  -> respond $ "No such plugin '" ++ nm ++ ".'"
+    _                  -> relayBack $ "No such plugin '" ++ nm ++ ".'"
   where
     loadIt = do r <- liftIO $ loadPlugin r nm
-                if r then gotcha else respond "Plugin load failed."
-    gotcha = respond "Gotcha."
+                if r then gotcha else relayBack "Plugin load failed."
+    gotcha = relayBack "Gotcha."
     ipcCmdList = showCmdList . Set.toList . apiCommandSet . ipcAPI
 
-builtinCmd _ _ _ _ = respond "Plugin expected."
+builtinCmd _ _ _ _ = relayBack "Plugin expected."
 
 showCmdList []   = "That plugin has no commands."
 showCmdList cmds = (intercalate ", " cmds)
@@ -282,32 +321,5 @@ doResponse w q = case q of
 privMsg :: Target -> String -> Users ()
 privMsg t s = do dest <- pretty t
                  lift $ write "PRIVMSG" [dest, s]
-
--- PLUGIN-SIDE INTERNALS
-
-data PluginImpl = PluginImpl {
-    pluginCommands :: Map String (User -> Target -> String -> Plugin ()),
-    pluginProcessor :: Maybe (ServerMsg -> Plugin ())
-}
-
-data PluginState = PluginState {
-    pluginRead, pluginWrite :: Handle
-}
-
-data PluginResp = ClientMsg IRCMsg | ConfigLookup String | UsersQuery Chan
-                  | ChansQuery | UserLookup User | EndResponse
-                  deriving (Read, Show)
-
-send' :: PluginResp -> Plugin ()
-send' = (asks pluginWrite >>=) . flip send
-
-recv' :: Plugin (Either String MachineReq)
-recv' = asks pluginRead >>= recv
-
-data ReqException = ReqParseException String | ReqUnsupportedException
-                    deriving (Show, Typeable)
-instance Exception ReqException
-
-invalidReq = io . throwIO . ReqParseException
 
  -- vi: set sw=4 ts=4 sts=4 tw=79 ai et nocindent:

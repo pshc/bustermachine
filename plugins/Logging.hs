@@ -16,14 +16,14 @@ main = do let dir = "logs"
     logStub dir msg = queryChans >>= logger dir msg
  
 logger dir msg chs = do
-    now <- io getZonedTime
+    now <- liftIO getZonedTime
     line <- pretty msg
     mapM_ (go now line) (Map.assocs chs)
   where
     go t line (ch, cs) = when inChannel $ do
         chan <- pretty ch
         let filename = dir ++ "/" ++ chan ++ "." ++ dateStr t ++ ".log"
-        io $ writeLine filename
+        liftIO $ writeLine filename
       where
         inChannel = filterByChan (`Map.member` chanUsers cs) False msg ch
         writeLine fnm = do h <- openFile fnm AppendMode

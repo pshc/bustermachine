@@ -1,5 +1,6 @@
 import Buster.Plugin
 import Control.Monad
+import Control.Monad.Trans
 import Data.List
 import Data.Time.Clock
 import System.Process
@@ -8,16 +9,16 @@ main = do uptime <- uptime `fmap` getCurrentTime
           pluginMain $ commandPlugin [("uptime", uptime), ("quit", quit),
                                       ("loadAverage", loadAverage)]
   where
-    uptime zero _ ch _ = do
-      now <- io getCurrentTime
-      respondChat ch ("Uptime: " ++ niceTime (diffUTCTime now zero) "")
+    uptime zero _ = do
+      now <- liftIO getCurrentTime
+      respond ("Uptime: " ++ niceTime (diffUTCTime now zero) "")
 
     -- TODO: Remote termination & permissions system
-    quit _ ch _ = respondChat ch "I'll never stop."
+    quit _ = respond "I'll never stop."
 
-    loadAverage _ ch _ = do u <- io $ readProcess "uptime" [] ""
-                            let Just l = isPrefixOf "average:" `find` tails u
-                            respondChat ch $ unwords $ words (drop 8 l)
+    loadAverage _ = do u <- liftIO $ readProcess "uptime" [] ""
+                       let Just l = isPrefixOf "average:" `find` tails u
+                       respond $ unwords $ words (drop 8 l)
  
 niceTime td = (++) . join . intersperse " " . filter (not . null) . map f $
       [(years      , "y"), (months % 12, "m"),
