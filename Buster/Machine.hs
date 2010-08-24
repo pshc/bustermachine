@@ -15,6 +15,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import System.IO
 import System.Posix
+import System.Timeout
 
 setupMachine :: [String] -> IO MessageProcessor
 setupMachine ps = do installHandler openEndedPipe Ignore Nothing
@@ -63,14 +64,18 @@ loadPlugin ref nm = do
                                         executeFile bin False [] (Just env)
                 r <- fdToHandle pr; dontBuffer r
                 w <- fdToHandle pw; dontBuffer w
-                recv r >>= either (badAPI r w pid)
-                                  (return . Just . PluginIPC pid r w)
+                timeout (10*1000000) (recv r) >>= dealWithIt r w pid
 
-    badAPI r w pid l = do putStrLn $ "Got invalid spec from " ++ nm ++ ":"
-                          putStrLn l
-                          hClose r; hClose w
-                          signalProcess softwareTermination pid
-                          return Nothing
+    dealWithIt r w pid res = case res of
+        Nothing        -> putStrLn ("Loading " ++ nm ++ " timed out.") >> nope
+        Just (Left e)  -> do putStrLn $ "Got invalid spec from " ++ nm ++ ":"
+                             putStrLn e
+                             nope
+        Just (Right a) -> return $ Just (PluginIPC pid r w a)
+      where
+        nope = do hClose r; hClose w
+                  signalProcess softwareTermination pid
+                  return Nothing
 
     addAPI m a = do let m' = Map.insert nm a (machPlugins m)
                     writeIORef ref $ m { machPlugins = m' }
