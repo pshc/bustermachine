@@ -83,11 +83,11 @@ lookupConfig s = do send' $ ConfigLookup s
     gotIt (ReqConfig k (Just v)) | k == s = return (Just v)
     gotIt _                               = return Nothing
 
-queryChans :: Plugin (Map Chan ChannelState)
+queryChans :: Plugin (Map Channel ChannelState)
 queryChans = do send' ChansQuery
                 recv' >>= either invalidReq (\(ReqChans c) -> return c)
 
-queryUsers :: Chan -> Plugin (Maybe (Map User Priv))
+queryUsers :: Channel -> Plugin (Maybe (Map User Priv))
 queryUsers ch = do send' $ UsersQuery ch
                    recv' >>= either invalidReq gotIt
   where

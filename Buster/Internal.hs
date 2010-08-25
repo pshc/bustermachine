@@ -8,14 +8,14 @@ import Data.Map (Map)
 import Data.Set (Set)
 import System.IO
 
-data PluginResp = ClientMsg IRCMsg | ConfigLookup String | UsersQuery Chan
+data PluginResp = ClientMsg IRCMsg | ConfigLookup String | UsersQuery Channel
                   | ChansQuery | UserLookup User | EndResponse
                   deriving (Read, Show)
 
 data MachineReq = ReqProcess ServerMsg | ReqCommand IString User Target String
                   | ReqConfig String (Maybe String)
-                  | ReqUsers Chan (Maybe (Map User Priv))
-                  | ReqChans (Map Chan ChannelState)
+                  | ReqUsers Channel (Maybe (Map User Priv))
+                  | ReqChans (Map Channel ChannelState)
                   | ReqUser User (Maybe UserInfo)
                   deriving (Read, Show)
 

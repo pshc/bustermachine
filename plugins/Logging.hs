@@ -56,13 +56,13 @@ prettyMsg (src, msg) who = case msg of
                        meta $ s "has left " . s chan . maybeParen m
     Notice t m   -> case t of
       User _  -> return $ s "Notice from " . who . s ": " . s m
-      Chan ch -> do chan <- pretty ch
-                    return $ s "Notice from " . who . s " (" . s chan
-                                              . s "): " . s m
+      Channel ch -> do chan <- pretty ch
+                       return $ s "Notice from " . who . s " (" . s chan
+                                                 . s "): " . s m
     PrivMsg t m  -> case t of
-      User _ -> do pm <- pretty (src, m)
-                   return $ s "(PM) " . s pm
-      Chan _ -> s `fmap` pretty (src, m)
+      User _    -> do pm <- pretty (src, m)
+                      return $ s "(PM) " . s pm
+      Channel _ -> s `fmap` pretty (src, m)
     Topic _ m    -> meta $ s "changes topic to \"" . s m . s "\""
     Quit m       -> meta $ s "has quit IRC" . paren m
    where

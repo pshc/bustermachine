@@ -15,19 +15,19 @@ class (Functor m, Monad m) => Context m where
 class Pretty a where
   pretty :: (Context m) => a -> m String
 
-data IRCMsg = Away (Maybe String) | Invite Chan | Join Chan
-              | Kick Chan User (Maybe String) | Mode Chan [String]
-              | NickChange String | Part Chan (Maybe String)
+data IRCMsg = Away (Maybe String) | Invite Channel | Join Channel
+              | Kick Channel User (Maybe String) | Mode Channel [String]
+              | NickChange String | Part Channel (Maybe String)
               | Notice Target String | PrivMsg Target Chat
-              | Topic Chan String | Quit String
+              | Topic Channel String | Quit String
               deriving (Read, Show)
 
 type ServerMsg = (User, IRCMsg)
 
-data Chan = (:#) String | (:&) String | (:+) String
+data Channel = (:#) String | (:&) String | (:+) String
             deriving (Eq, Ord, Read, Show)
 
-instance Pretty Chan where
+instance Pretty Channel where
   pretty ((:#) s) = return ('#':s)
   pretty ((:&) s) = return ('&':s)
   pretty ((:+) s) = return ('+':s)
@@ -48,11 +48,11 @@ data UsersState = UsersState { selfUser :: User,
                                userNicks :: Map String User,
                                idCtr :: Int }
 
-data Target = User User | Chan Chan deriving (Read, Show)
+data Target = User User | Channel Channel deriving (Read, Show)
 
 instance Pretty Target where
   pretty (User u)  = pretty u
-  pretty (Chan ch) = pretty ch
+  pretty (Channel ch) = pretty ch
 
 data Priv = Op | Voice | Regular deriving (Read, Show)
 
@@ -63,7 +63,7 @@ instance Pretty (User, Chat) where
     Chat t   -> return $ '<':nick ++ "> " ++ t
     Action t -> return $ "* " ++ nick ++ " " ++ t
 
-filterByChan :: (User -> Bool) -> Bool -> ServerMsg -> Chan -> Bool
+filterByChan :: (User -> Bool) -> Bool -> ServerMsg -> Channel -> Bool
 filterByChan inChan extra (src, msg) ch = case msg of
     Away _             -> extra -- && inChan src
     Join c             -> c == ch
@@ -71,8 +71,8 @@ filterByChan inChan extra (src, msg) ch = case msg of
     Mode c _           -> c == ch
     NickChange _       -> True -- inChan src
     Part c _           -> c == ch
-    Notice  (Chan c) _ -> extra && c == ch
-    PrivMsg (Chan c) _ -> c == ch
+    Notice  (Channel c) _ -> extra && c == ch
+    PrivMsg (Channel c) _ -> c == ch
     Topic c _          -> c == ch
     Quit _             -> True -- inChan src
     _                  -> False

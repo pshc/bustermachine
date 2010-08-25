@@ -59,7 +59,7 @@ grab ref (words -> [nick]) | not (null nick) = do
     confirm False = "Couldn't grab due to database error."
 grab _ _ = respond "Please specify one nickname."
 
-grabTracker ref (user, PrivMsg (Chan ch) chat) = do
+grabTracker ref (user, PrivMsg (Channel ch) chat) = do
     userInfo <- contextLookup user
     quote <- pretty (user, chat)
     maybe (return ()) (liftIO . trackGrab quote) userInfo

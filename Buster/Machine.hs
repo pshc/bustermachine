@@ -116,7 +116,7 @@ relayBack :: String -> RelayBack ()
 relayBack msg = ask >>= (lift . flip privMsg msg)
 
 dispatchPlugins :: MVar Machine -> MessageProcessor
-dispatchPlugins mv (src, msg) = do
+dispatchPlugins mv chan (src, msg) = do
     Machine { machPlugins = ps } <- liftIO $ readMVar mv
     mapM_ doProc [p | p <- Map.elems ps, apiHasProcessor (ipcAPI p)]
     case msg of
@@ -124,8 +124,8 @@ dispatchPlugins mv (src, msg) = do
                                              (reflect t)
       _                        -> return ()
   where
-    reflect ch@(Chan _) = ch
-    reflect _           = User src
+    reflect ch@(Channel _) = ch
+    reflect _              = User src
 
     doProc p = do send (ipcWrite p) (ReqProcess (src, msg))
                   handleResponses p
@@ -173,20 +173,13 @@ showCmdList cmds = (intercalate ", " cmds)
 
 forkResponseHandler :: PluginIPC -> RelayBack ()
 forkResponseHandler p = do
-    -- TEMP: I N C E P T I O N
     a <- lift (lift get)
-    b <- lift get
-    c <- get
-    liftIO $ forkIO $ do r <- (5*1000000) `timeout` execStateT
-                                                     (execStateT
-                                                       (execStateT go
-                                                        c)
-                                                      b)
-                                                    a
+    b <- lift ask
+    liftIO $ forkIO $ do r <- timeout (5*1000000) (inception a b)
                          when (isNothing r) $ putStrLn "Command timed out."
     return ()
   where
-    go = lift $ handleResponses p
+    inception a b = evalStateT (runReaderT (handleResponses p) b) a
 
 handleResponses :: PluginIPC -> Users ()
 handleResponses p@(PluginIPC {..}) = handleOne
