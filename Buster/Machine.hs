@@ -63,7 +63,7 @@ loadPlugin nm mach@(Machine {..}) = do
                 (Fd cr, pw) <- createPipe
                 gid <- getProcessGroupID
                 let env = [("READ", show cr), ("WRITE", show cw)]
-                    bin = dir ++ "/" ++ nm
+                    bin = dir ++ nm
                 pid <- forkProcess $ do joinProcessGroup gid
                                         executeFile bin False [] (Just env)
                 r <- fdToHandle pr; dontBuffer r
