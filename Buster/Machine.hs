@@ -27,7 +27,7 @@ setupMachine ps = do installHandler openEndedPipe Ignore Nothing
                                     (Catch $ modifyMVar_ m cleanupZombies)
                                     Nothing
                      mapM_ (modifyMVar m . loadPlugin) ps
-                     return $ dispatchPlugins m
+                     return $ forkDispatch m
   where
     cleanupZombies mach@(Machine {..}) = do
         ps <- cleanups (Map.assocs machPlugins) machPlugins
@@ -75,7 +75,8 @@ loadPlugin nm mach@(Machine {..}) = do
         Just (Left e)  -> do putStrLn $ "Got invalid spec from " ++ nm ++ ":"
                              putStrLn e
                              nope
-        Just (Right a) -> return $ Just (PluginIPC pid r w a)
+        Just (Right a) -> do socks <- newMVar (r, w)
+                             return $ Just (PluginIPC pid socks a)
       where
         nope = do hClose r; hClose w
                   signalProcess softwareTermination pid
@@ -98,15 +99,16 @@ unloadPlugin nm mach = do maybe (return mach) go
   where
     go p = do let ps' = nm `Map.delete` machPlugins mach
               killPlugin p
-              --- XXX: Could block indefinitely from a malicious plugin
-              getProcessStatus True True (ipcPID p)
+              -- TODO: Kill the thread if this blocks for too long
+              tid <- forkIO $ do getProcessStatus True True (ipcPID p)
+                                 return ()
               return $ mach { machPlugins = ps' }
 
 killPlugin = signalProcess softwareTermination . ipcPID
 
 data PluginIPC = PluginIPC {
     ipcPID :: ProcessID,
-    ipcRead, ipcWrite :: Handle,
+    ipcSockets :: MVar (Handle, Handle),
     ipcAPI :: API
 }
 
@@ -118,10 +120,20 @@ relayBack msg = do (chan, t) <- ask
 relayMsg msg = do (chan, _) <- ask
                   liftIO $ writeChan chan msg
 
+forkDispatch :: MVar Machine -> MessageProcessor
+forkDispatch m chan msg = do
+    f <- inception (dispatchPlugins m chan msg)
+    liftIO $ forkIO $ do r <- timeout 5000000 f
+                         when (isNothing r) $ putStrLn "Command timed out."
+    return ()
+  where
+    inception f = do a <- lift get
+                     b <- ask
+                     return $ evalStateT (runReaderT f b) a
+
 dispatchPlugins :: MVar Machine -> MessageProcessor
 dispatchPlugins mv chan (src, msg) = do
     Machine { machPlugins = ps } <- liftIO $ readMVar mv
-    -- TODO: fork now so we can run processors in the forked thread too
     mapM_ doProc [p | p <- Map.elems ps, apiHasProcessor (ipcAPI p)]
     case msg of
       PrivMsg t (Chat ('!':s)) -> runReaderT (doCmd ps t s (words s))
@@ -131,16 +143,22 @@ dispatchPlugins mv chan (src, msg) = do
     reflect ch@(Channel _) = ch
     reflect _              = User src
 
-    doProc p = do send (ipcWrite p) (ReqProcess (src, msg))
-                  handleResponses p `runReaderT` (chan, User src)
+    -- XXX: Better to use withMVar, but need inception
+    doProc p = do (r, w) <- liftIO $ takeMVar (ipcSockets p)
+                  send w (ReqProcess (src, msg))
+                  handleResponses r w (ipcPID p) `runReaderT` (chan, User src)
+                  liftIO $ putMVar (ipcSockets p) (r, w)
 
     doCmd ps _ _ ((lower -> c):ws)
       | c `elem` builtinCmds = builtinCmd ps mv c ws
     doCmd ps t s (c:_) = case Map.fold (collectPlugins $ IString c) [] ps of
         []  -> relayBack ("No such command " ++ c ++ ".")
         [p] -> do let args = stripLeft $ drop (length c) s
-                  lift $ send (ipcWrite p) (ReqCommand (IString c) src t args)
-                  forkResponseHandler p
+                  -- XXX: inception again
+                  (r, w) <- liftIO $ takeMVar (ipcSockets p)
+                  lift $ send w $ ReqCommand (IString c) src t args
+                  handleResponses r w (ipcPID p)
+                  liftIO $ putMVar (ipcSockets p) (r, w)
         ps  -> relayBack ("Ambiguous command " ++ c ++ ".") -- TODO
       where
         collectPlugins w p cs | w `Set.member` apiCommandSet (ipcAPI p) = p:cs
@@ -175,31 +193,16 @@ builtinCmd _ _ _ _ = relayBack "Plugin expected."
 showCmdList []   = "That plugin has no commands."
 showCmdList cmds = (intercalate ", " cmds)
 
-forkResponseHandler :: PluginIPC -> RelayBack ()
-forkResponseHandler p = do
-    a <- lift (lift get)
-    b <- lift ask
-    c <- ask
-    liftIO $ forkIO $ do r <- timeout (5*1000000) (inception a b c)
-                         when (isNothing r) $ putStrLn "Command timed out."
-    return ()
+handleResponses r w pid = handleOne
   where
-    inception a b c = evalStateT
-                        (runReaderT
-                          (runReaderT (handleResponses p) c)
-                        b)
-                      a
-
-handleResponses :: PluginIPC -> RelayBack ()
-handleResponses p@(PluginIPC {..}) = handleOne
-  where
-    handleOne = lift (recv ipcRead) >>= either (liftIO . invalidIPC) go
+    handleOne = lift (recv r) >>= either (liftIO . invalidIPC) go
 
     go EndResponse = return ()
-    go resp        = doResponse ipcWrite resp >> handleOne
+    go resp        = doResponse w resp >> handleOne
 
     invalidIPC l = do putStrLn $ "Got invalid resp: " ++ l
-                      killPlugin p
+                      -- killPlugin p
+                      signalProcess softwareTermination pid -- TEMP
 
 doResponse w q = case q of
     ClientMsg msg  -> relayMsg msg

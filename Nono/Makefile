@@ -1,7 +1,8 @@
 all: nono
 
+LINKFLAGS = -threaded
 ifneq ($(shell uname),Darwin)
- LINKFLAGS = -dynamic
+ LINKFLAGS := $(LINKFLAGS) -dynamic
 endif
 
 nono: Nono.hs
