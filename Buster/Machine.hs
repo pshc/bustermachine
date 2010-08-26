@@ -110,25 +110,29 @@ data PluginIPC = PluginIPC {
     ipcAPI :: API
 }
 
-type RelayBack = ReaderT Target Users
+type RelayBack = ReaderT (Chan IRCMsg, Target) Users
 
-relayBack :: String -> RelayBack ()
-relayBack msg = ask >>= (lift . flip privMsg msg)
+relayBack msg = do (chan, t) <- ask
+                   liftIO $ writeChan chan (PrivMsg t $ Chat msg)
+
+relayMsg msg = do (chan, _) <- ask
+                  liftIO $ writeChan chan msg
 
 dispatchPlugins :: MVar Machine -> MessageProcessor
 dispatchPlugins mv chan (src, msg) = do
     Machine { machPlugins = ps } <- liftIO $ readMVar mv
+    -- TODO: fork now so we can run processors in the forked thread too
     mapM_ doProc [p | p <- Map.elems ps, apiHasProcessor (ipcAPI p)]
     case msg of
       PrivMsg t (Chat ('!':s)) -> runReaderT (doCmd ps t s (words s))
-                                             (reflect t)
+                                             (chan, reflect t)
       _                        -> return ()
   where
     reflect ch@(Channel _) = ch
     reflect _              = User src
 
     doProc p = do send (ipcWrite p) (ReqProcess (src, msg))
-                  handleResponses p
+                  handleResponses p `runReaderT` (chan, User src)
 
     doCmd ps _ _ ((lower -> c):ws)
       | c `elem` builtinCmds = builtinCmd ps mv c ws
@@ -175,16 +179,21 @@ forkResponseHandler :: PluginIPC -> RelayBack ()
 forkResponseHandler p = do
     a <- lift (lift get)
     b <- lift ask
-    liftIO $ forkIO $ do r <- timeout (5*1000000) (inception a b)
+    c <- ask
+    liftIO $ forkIO $ do r <- timeout (5*1000000) (inception a b c)
                          when (isNothing r) $ putStrLn "Command timed out."
     return ()
   where
-    inception a b = evalStateT (runReaderT (handleResponses p) b) a
+    inception a b c = evalStateT
+                        (runReaderT
+                          (runReaderT (handleResponses p) c)
+                        b)
+                      a
 
-handleResponses :: PluginIPC -> Users ()
+handleResponses :: PluginIPC -> RelayBack ()
 handleResponses p@(PluginIPC {..}) = handleOne
   where
-    handleOne = recv ipcRead >>= either (liftIO . invalidIPC) go
+    handleOne = lift (recv ipcRead) >>= either (liftIO . invalidIPC) go
 
     go EndResponse = return ()
     go resp        = doResponse ipcWrite resp >> handleOne
@@ -193,22 +202,15 @@ handleResponses p@(PluginIPC {..}) = handleOne
                       killPlugin p
 
 doResponse w q = case q of
-    ClientMsg (PrivMsg t msg) -> privMsg t $ formatChat msg
-    ClientMsg m               -> liftIO $ putStrLn $ "TODO: Perform " ++ show m
-
-    ConfigLookup k -> do v <- lift (getConfig k)
+    ClientMsg msg  -> relayMsg msg
+    ConfigLookup k -> do v <- lift2 $ getConfig k
                          reply $ ReqConfig k v
-    UsersQuery ch  -> lift (getChan ch) >>= reply . ReqUsers ch
-                                                  . fmap chanUsers
-    ChansQuery     -> lift getChans >>= reply . ReqChans
-    UserLookup u   -> lookupUser u >>= reply . ReqUser u
+    UsersQuery ch  -> lift2 (getChan ch) >>= reply . ReqUsers ch
+                                                   . fmap chanUsers
+    ChansQuery     -> lift2 getChans >>= reply . ReqChans
+    UserLookup u   -> lift (lookupUser u) >>= reply . ReqUser u
   where
-    formatChat (Chat s)   = s
-    formatChat (Action s) = "\001ACTION " ++ s ++ "\001"
+    lift2 = lift . lift
     reply = liftIO . send w
-
-privMsg :: Target -> String -> Users ()
-privMsg t s = do dest <- pretty t
-                 lift $ write "PRIVMSG" [dest, s]
 
  -- vi: set sw=4 ts=4 sts=4 tw=79 ai et nocindent:

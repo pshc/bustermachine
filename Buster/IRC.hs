@@ -3,7 +3,7 @@
 module Buster.IRC (Config, MessageProcessor, Net, Users,
                    Bot(..), ChannelState(..),
                    getChan, getChans, alterChan, lookupUser,
-                   getConfig, requiredConfig, runBot, write) where
+                   getConfig, requiredConfig, runBot) where
 
 import Buster.Message
 import Buster.Misc
@@ -92,11 +92,11 @@ runBot cfg mp = bracket connect hClose ready
             write "USER" [maybe nick id $ cfg "user",
                           "0", "*", maybe "" id $ cfg "fullName"]
             write "JOIN" [config "channel"]
-            h <- gets socket
+            bot <- get
             chan <- liftIO newChan
-            liftIO $ forkIO $ writeThread h chan
             users <- liftIO $ newMVar (initUsers nick)
-            listen h chan `runReaderT` users
+            liftIO $ forkIO $ writeThread bot users chan
+            listen (socket bot) chan `runReaderT` users
 
     onErr :: IOException -> IO ()
     onErr = hPrint stderr
@@ -161,10 +161,19 @@ write msg ps = do h <- gets socket
                   ps' <- liftIO $ joinParams ps
                   liftIO $ hPrintf h "%s %s\r\n" msg ps'
 
-writeThread :: Handle -> Chan IRCMsg -> IO ()
-writeThread h chan = getChanContents chan >>= mapM_ writeMsg
+privMsg :: Target -> String -> Users ()
+privMsg t s = do dest <- pretty t
+                 lift $ write "PRIVMSG" [dest, s]
+
+writeThread bot users chan = do msgs <- getChanContents chan
+                                evalStateT (runReaderT (mapM_ writeMsg msgs)
+                                            users) bot
   where
-    writeMsg msg = putStrLn (show msg)
+    writeMsg (PrivMsg t chat) = privMsg t (formatChat chat)
+    writeMsg msg              = io $ putStrLn $ "TODO: Send " ++ show msg
+
+    formatChat (Chat s)   = s
+    formatChat (Action s) = "\001ACTION " ++ s ++ "\001"
 
 joinParams [] = return ""
 joinParams ps = go [] ps
