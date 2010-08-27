@@ -13,12 +13,19 @@ import System.Posix.Time
 
 main = do recentMsgs <- newIORef Map.empty
           pluginMain $ hybridPlugin [("rq", rq), ("!rq", rq3),
+                       ("quote", quote),
                        ("grab", grab recentMsgs)] (grabTracker recentMsgs)
 
 rq ps = do r <- liftIO (withDB $ randomQuery 1 (words ps))
            respond (showQuotes r)
 rq3 ps = do r <- liftIO (withDB $ randomQuery 3 (words ps))
             respond (showQuotes r)
+quote (words -> [nick]) = liftIO (withDB go) >>= respond . showQuotes
+  where
+    go conn = quickQuery' conn ("SELECT quote FROM quotegrabs WHERE nick = ? "
+                                ++ "ORDER BY id DESC LIMIT 1") [toSql nick]
+
+quote _ = respond "You must supply one nickname."
 
 withDB = bracket (connectSqlite3 "data/quotegrabs.sqlite") disconnect
 
