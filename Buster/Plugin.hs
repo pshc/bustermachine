@@ -10,6 +10,7 @@ import Buster.Internal
 import Buster.IRC
 import Buster.Message
 import Buster.Misc
+import Control.Concurrent
 import Control.Exception
 import Control.Monad.Reader
 import Data.Map (Map)
@@ -49,6 +50,8 @@ cmdMap cs = Map.fromList [(IString k, v) | (k, v) <- cs]
 
 pluginMain :: PluginImpl -> IO ()
 pluginMain (PluginImpl {..}) = do
+    installHandler openEndedPipe Default Nothing
+    forkIO orphanChecker
     [r, w] <- mapM parsePipe ["READ", "WRITE"]
     mapM_ dontBuffer [stdout, stderr, r, w]
     send w $ API (Map.keysSet pluginCommands) (isJust pluginProcessor)
@@ -69,6 +72,11 @@ pluginMain (PluginImpl {..}) = do
 
     handleError :: ReqException -> IO ()
     handleError = print -- and leave loop
+
+    orphanChecker = do threadDelay 5000000
+                       id <- getParentProcessID
+                       if id == 1 then raiseSignal softwareTermination
+                                  else orphanChecker
 
 respond :: String -> Cmd ()
 respond s = medium >>= lift . flip sendChat s
