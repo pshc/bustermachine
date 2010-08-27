@@ -5,9 +5,6 @@ MAKE = make --no-print-directory
 
 all: $(TARGET)
 
-run: $(TARGET)
-	./$<
-
 $(TARGET): .dist $(TARGET_SRC) plugins
 	@rm -f Nono/nono
 	@$(MAKE) -C Nono nono
