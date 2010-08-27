@@ -39,7 +39,7 @@ setupMachine ps = do installHandler openEndedPipe Ignore Nothing
       where
         handleStatus (Exited n)     = unload $ "exit (" ++ show n ++ ")"
         handleStatus (Terminated s) = unload $ "termination (" ++ show s ++ ")"
-        handleStatus (Stopped _)    = do killPlugin p
+        handleStatus (Stopped _)    = do killPlugin (ipcPID p)
                                          unload "stoppage (now terminated)"
         unload s = do when (nm `Map.member` m) $
                        putStrLn $ "Unloading " ++ nm ++ " due to process " ++ s
@@ -68,7 +68,7 @@ loadPlugin nm mach@(Machine {..}) = do
                                         executeFile bin False [] (Just env)
                 r <- fdToHandle pr; dontBuffer r
                 w <- fdToHandle pw; dontBuffer w
-                timeout (10*1000000) (recv r) >>= dealWithIt r w pid
+                timeout (10*sec) (recv r) >>= dealWithIt r w pid
 
     dealWithIt r w pid res = case res of
         Nothing        -> putStrLn ("Loading " ++ nm ++ " timed out.") >> nope
@@ -98,13 +98,23 @@ unloadPlugin nm mach = do maybe (return mach) go
                                 (nm `Map.lookup` machPlugins mach)
   where
     go p = do let ps' = nm `Map.delete` machPlugins mach
-              killPlugin p
-              -- TODO: Kill the thread if this blocks for too long
-              tid <- forkIO $ do getProcessStatus True True (ipcPID p)
-                                 return ()
+              killPlugin (ipcPID p)
               return $ mach { machPlugins = ps' }
 
-killPlugin = signalProcess softwareTermination . ipcPID
+killPlugin pid = do signalProcess softwareTermination pid
+                    waiting <- newMVar ()
+                    tid <- forkIO $ do getProcessStatus True True pid
+                                       tryTakeMVar waiting
+                                       return ()
+                    -- If the plugin refuses to die in a timely manner, kill it
+                    forkIO $ do threadDelay (20*sec)
+                                stillAlive <- isJust `fmap` tryTakeMVar waiting
+                                when stillAlive $ do
+                                    signalProcess killProcess pid
+                                    threadDelay (2*sec)
+                                    killThread tid
+                    return ()
+
 
 data PluginIPC = PluginIPC {
     ipcPID :: ProcessID,
@@ -120,10 +130,12 @@ relayBack msg = do (chan, t) <- ask
 relayMsg msg = do (chan, _) <- ask
                   liftIO $ writeChan chan msg
 
+sec = 1000000
+
 forkDispatch :: MVar Machine -> MessageProcessor
 forkDispatch m chan msg = do
     f <- inception (dispatchPlugins m chan msg)
-    liftIO $ forkIO $ do r <- timeout 5000000 f
+    liftIO $ forkIO $ do r <- timeout (5*sec) f
                          when (isNothing r) $ putStrLn "Command timed out."
     return ()
   where
@@ -201,8 +213,7 @@ handleResponses r w pid = handleOne
     go resp        = doResponse w resp >> handleOne
 
     invalidIPC l = do putStrLn $ "Got invalid resp: " ++ l
-                      -- killPlugin p
-                      signalProcess softwareTermination pid -- TEMP
+                      killPlugin pid
 
 doResponse w q = case q of
     ClientMsg msg  -> relayMsg msg
