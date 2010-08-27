@@ -1,6 +1,6 @@
 {-# LANGUAGE RecordWildCards, TupleSections, TypeSynonymInstances,
              ViewPatterns #-}
-module Buster.IRC (Config, MessageProcessor, Net, Users,
+module Buster.IRC (Config, Net, Users, StupidHack,
                    Bot(..), ChannelState(..),
                    getChan, getChans, alterChan, lookupUser,
                    getConfig, requiredConfig, runBot) where
@@ -24,7 +24,7 @@ import Prelude hiding (catch, log)
 type Net = StateT Bot IO
 data Bot = Bot { socket :: Handle,
                  botConfig :: Config,
-                 processor :: MessageProcessor,
+                 servChan :: Chan ServerMsg,
                  channels :: Map Channel ChannelState }
 
 type Users = ReaderT (MVar UsersState) Net
@@ -47,7 +47,7 @@ asks' = (`fmap` ask')
 modify' :: (UsersState -> UsersState) -> Users ()
 modify' f = ask >>= io . flip modifyMVar_ (return . f)
 
-type MessageProcessor = Chan IRCMsg -> ServerMsg -> Users ()
+type StupidHack = (Bot, MVar UsersState)
 data ChannelState = ChannelState { chanTopic :: Maybe String,
                                    chanUsers :: Map User Priv }
                     deriving (Read, Show)
@@ -71,8 +71,8 @@ alterChan f ch = modify (\b -> b { channels = Map.alter f ch (channels b) })
 
 io = liftIO :: IO a -> Users a
 
-runBot :: Config -> MessageProcessor -> IO ()
-runBot cfg mp = bracket connect hClose ready
+runBot :: Config -> (Chan ServerMsg, Chan IRCMsg, MVar StupidHack) -> IO ()
+runBot cfg (inChan, outChan, stupidHack) = bracket connect hClose ready
   where
     config s = maybe (error $ "Need config value for " ++ s) id (cfg s)
     (nick, server) = (config "nick", config "server")
@@ -85,24 +85,24 @@ runBot cfg mp = bracket connect hClose ready
         return h
     notify = bracket_ (printf "Connecting to %s ... " server)
                       (putStrLn "done.")
-    ready h = do let bot = Bot { socket = h, botConfig = cfg, processor = mp,
-                                 channels = Map.empty }
+    ready h = do let bot = Bot { socket = h, botConfig = cfg,
+                                 servChan = inChan, channels = Map.empty }
                  evalStateT go bot `catch` onErr
     go = do write "NICK" [nick]
             write "USER" [maybe nick id $ cfg "user",
                           "0", "*", maybe "" id $ cfg "fullName"]
             write "JOIN" [config "channel"]
             bot <- get
-            chan <- liftIO newChan
             users <- liftIO $ newMVar (initUsers nick)
-            liftIO $ forkIO $ writeThread bot users chan
-            listen (socket bot) chan `runReaderT` users
+            liftIO $ putMVar stupidHack (bot, users)
+            liftIO $ forkIO $ writeThread bot users outChan
+            listen (socket bot) `runReaderT` users
 
     onErr :: IOException -> IO ()
     onErr = hPrint stderr
  
-listen :: Handle -> Chan IRCMsg -> Users ()
-listen h chan = forever $ do
+listen :: Handle -> Users ()
+listen h = forever $ do
     (src, s) <- (stripSource . init) `fmap` io (hGetLine h)
     case parseParams [] s of
       "PING":ps -> lift $ write "PONG" ps
@@ -122,8 +122,8 @@ listen h chan = forever $ do
     runProcessor ms nm = do user <- userFromName nm
                             let msgs = zip (repeat user) ms
                             mapM_ updateState msgs
-                            proc <- lift (gets processor)
-                            mapM_ (proc chan) msgs
+                            chan <- lift (gets servChan)
+                            mapM_ (liftIO . writeChan chan) msgs
 
     updateState :: (User, IRCMsg) -> Users ()
     updateState (u, msg) = case msg of

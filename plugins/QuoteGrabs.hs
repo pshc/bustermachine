@@ -12,9 +12,9 @@ import Database.HDBC.Sqlite3 (connectSqlite3)
 import System.Posix.Time
 
 main = do recentMsgs <- newIORef Map.empty
-          pluginMain $ hybridPlugin [("rq", rq), ("!rq", rq3),
-                       ("quote", quote),
-                       ("grab", grab recentMsgs)] (grabTracker recentMsgs)
+          let cmds = [("rq", rq), ("!rq", rq3),
+                      ("quote", quote), ("grab", grab recentMsgs)]
+          pluginMain $ hybridPlugin cmds (grabTracker recentMsgs) False
 
 rq ps = do r <- liftIO (withDB $ randomQuery 1 (words ps))
            respond (showQuotes r)

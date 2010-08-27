@@ -26,7 +26,7 @@ type Cmd = ReaderT Invocation Plugin
 
 data PluginImpl = PluginImpl {
     pluginCommands :: Map IString (String -> Cmd ()),
-    pluginProcessor :: Maybe (ServerMsg -> Plugin ())
+    pluginProcessor :: Maybe (ServerMsg -> Plugin (), Bool)
 }
 
 data PluginState = PluginState {
@@ -42,9 +42,9 @@ data ReqException = ReqParseException String | ReqUnsupportedException
                     deriving (Show, Typeable)
 instance Exception ReqException
 
-commandPlugin cmds  = PluginImpl (cmdMap cmds) Nothing
-processorPlugin p   = PluginImpl (Map.empty) (Just p)
-hybridPlugin cmds p = PluginImpl (cmdMap cmds) (Just p)
+commandPlugin cmds      = PluginImpl (cmdMap cmds) Nothing
+processorPlugin p own   = PluginImpl (Map.empty) (Just (p, own))
+hybridPlugin cmds p own = PluginImpl (cmdMap cmds) (Just (p, own))
 
 cmdMap cs = Map.fromList [(IString k, v) | (k, v) <- cs]
 
@@ -54,13 +54,17 @@ pluginMain (PluginImpl {..}) = do
     forkIO orphanChecker
     [r, w] <- mapM parsePipe ["READ", "WRITE"]
     mapM_ dontBuffer [stdout, stderr, r, w]
-    send w $ API (Map.keysSet pluginCommands) (isJust pluginProcessor)
+    send w api
     catch (loop `runReaderT` PluginState r w) handleError
     hClose r; hClose w
   where
+
+    api = let (doesProc, selfProc) = maybe (False, False) (\b -> (True, snd b))
+                                           pluginProcessor
+          in API (Map.keysSet pluginCommands) doesProc selfProc
     loop = recv' >>= either invalidReq ((>> loop) . doReq)
 
-    doReq (ReqProcess msg)             = check ($ msg) pluginProcessor
+    doReq (ReqProcess msg)             = check (($ msg) . fst) pluginProcessor
     doReq (ReqCommand cmd src ch args) =
         check (\f -> f args `runReaderT` Invocation src ch)
               (cmd `Map.lookup` pluginCommands)

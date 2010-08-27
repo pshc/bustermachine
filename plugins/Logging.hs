@@ -11,7 +11,7 @@ import System.IO
 
 main = do let dir = "logs"
           doesDirectoryExist dir >>= (`unless` createDirectory dir)
-          pluginMain $ processorPlugin (logStub dir)
+          pluginMain $ processorPlugin (logStub dir) True
   where
     logStub dir msg = queryChans >>= logger dir msg
  

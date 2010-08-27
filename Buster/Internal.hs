@@ -21,7 +21,8 @@ data MachineReq = ReqProcess ServerMsg | ReqCommand IString User Target String
 
 data API = API {
     apiCommandSet :: Set IString,
-    apiHasProcessor :: Bool
+    apiHasProcessor :: Bool,
+    apiProcessesOwn :: Bool
 } deriving (Read, Show)
 
 send :: (MonadIO m, Show a) => Handle -> a -> m ()

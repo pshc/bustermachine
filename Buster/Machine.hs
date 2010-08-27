@@ -1,5 +1,5 @@
 {-# LANGUAGE RecordWildCards, ViewPatterns #-}
-module Buster.Machine (setupMachine) where
+module Buster.Machine (forkMachine) where
 
 import Buster.Internal
 import Buster.IRC
@@ -19,15 +19,19 @@ import System.IO
 import System.Posix
 import System.Timeout
 
-setupMachine :: [String] -> IO MessageProcessor
-setupMachine ps = do installHandler openEndedPipe Ignore Nothing
-                     getProcessID >>= createProcessGroup
-                     m <- newMVar (Machine Map.empty)
-                     installHandler processStatusChanged
-                                    (Catch $ modifyMVar_ m cleanupZombies)
-                                    Nothing
-                     mapM_ (modifyMVar m . loadPlugin) ps
-                     return $ forkDispatch m
+forkMachine :: [String] -> IO (Chan ServerMsg, Chan IRCMsg, MVar StupidHack)
+forkMachine ps = do installHandler openEndedPipe Ignore Nothing
+                    getProcessID >>= createProcessGroup
+                    m <- newMVar (Machine Map.empty)
+                    installHandler processStatusChanged
+                                   (Catch $ modifyMVar_ m cleanupZombies)
+                                   Nothing
+                    mapM_ (modifyMVar m . loadPlugin) ps
+                    cmdChan <- newChan
+                    replyChan <- newChan
+                    mv <- newEmptyMVar
+                    forkIO $ forkDispatch m cmdChan replyChan mv
+                    return (cmdChan, replyChan, mv)
   where
     cleanupZombies mach@(Machine {..}) = do
         ps <- cleanups (Map.assocs machPlugins) machPlugins
@@ -132,24 +136,31 @@ relayMsg msg = do (chan, _) <- ask
 
 sec = 1000000
 
-forkDispatch :: MVar Machine -> MessageProcessor
-forkDispatch m chan msg = do
-    f <- inception (dispatchPlugins m chan msg)
-    liftIO $ forkIO $ do r <- timeout (5*sec) f
-                         when (isNothing r) $ putStrLn "Command timed out."
-    return ()
+forkDispatch :: MVar Machine -> Chan ServerMsg -> Chan IRCMsg
+                             -> MVar StupidHack -> IO ()
+forkDispatch m cmdChan replyChan stupidHack = do
+    (a, b) <- takeMVar stupidHack
+    evalStateT (runReaderT (forever loop) b) a
   where
+    loop :: Users ()
+    loop = do msg <- liftIO $ readChan cmdChan
+              f <- inception (dispatchPlugins m replyChan msg)
+              liftIO $ forkIO $ do r <- timeout (5*sec) f
+                                   when (isNothing r) $
+                                       putStrLn "Command timed out."
+              return ()
+
     inception f = do a <- lift get
                      b <- ask
                      return $ evalStateT (runReaderT f b) a
 
-dispatchPlugins :: MVar Machine -> MessageProcessor
-dispatchPlugins mv chan (src, msg) = do
+dispatchPlugins :: MVar Machine -> Chan IRCMsg -> ServerMsg -> Users ()
+dispatchPlugins mv replyChan (src, msg) = do
     Machine { machPlugins = ps } <- liftIO $ readMVar mv
     mapM_ doProc [p | p <- Map.elems ps, apiHasProcessor (ipcAPI p)]
     case msg of
-      PrivMsg t (Chat ('!':s)) -> runReaderT (doCmd ps t s (words s))
-                                             (chan, reflect t)
+      PrivMsg t (Chat ('!':s)) -> doCmd ps t s (words s) `runReaderT`
+                                                         (replyChan, reflect t)
       _                        -> return ()
   where
     reflect ch@(Channel _) = ch
@@ -158,7 +169,8 @@ dispatchPlugins mv chan (src, msg) = do
     -- XXX: Better to use withMVar, but need inception
     doProc p = do (r, w) <- liftIO $ takeMVar (ipcSockets p)
                   send w (ReqProcess (src, msg))
-                  handleResponses r w (ipcPID p) `runReaderT` (chan, User src)
+                  handleResponses r w (ipcPID p) `runReaderT`
+                                                 (replyChan, User src)
                   liftIO $ putMVar (ipcSockets p) (r, w)
 
     doCmd ps _ _ ((lower -> c):ws)

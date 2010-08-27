@@ -4,7 +4,7 @@ import Buster.Plugin
 import Control.Monad.Trans
 import Data.List
 
-main = pluginMain $ processorPlugin noticer
+main = pluginMain $ processorPlugin noticer False
 
 noticer (u, Notice (User _) m) = if isNickServ u then nickServ u m
                                                  else return ()
