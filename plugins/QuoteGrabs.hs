@@ -35,7 +35,8 @@ randomQuery num nicks conn = quickQuery' conn (q1 ++ q2 ++ q3) ps
     q1 = "SELECT quote FROM quotegrabs "
     q3 = "ORDER BY RANDOM() LIMIT ?"
     (q2, ps) = case nicks of []  -> ("", [toSql num])
-                             n:_ -> ("WHERE nick = ? ", [toSql n, toSql num])
+                             n:_ -> ("WHERE nick = ? COLLATE NOCASE ",
+                                     [toSql n, toSql num])
 
 showQuotes [] = "No quotes found."
 showQuotes qs = intercalate " " $ map extract qs
