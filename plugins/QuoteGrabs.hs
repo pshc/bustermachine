@@ -48,7 +48,7 @@ grab ref (words -> [nick]) | not (null nick) = do
     db <- liftIO $ readIORef ref
     Just grabber <- invoker >>= contextLookup
     addedBy <- pretty grabber
-    maybe (respond "No stored messages by anyone with that nick.")
+    maybe (respond $ "Nothing to grab from " ++ nick ++ ".")
           (doGrab addedBy) (nick `Map.lookup` db)
   where
     doGrab addedBy _
@@ -57,14 +57,19 @@ grab ref (words -> [nick]) | not (null nick) = do
         hostmask <- pretty ui
         let params = [toSql (userNick ui), toSql hostmask, toSql addedBy,
                       toSql addedAt, toSql quote]
-        ok <- liftIO $ withDB (\c -> do r <- run c insert params
-                                        if r == 1 then commit c >> return True
-                                                  else return False)
-        respond (confirm ok)
-    insert = "INSERT INTO quotegrabs (nick, hostmask, added_by, added_at, "
-             ++ "quote) VALUES (?, ?, ?, ?, ?)"
-    confirm True  = "Gotcha."
-    confirm False = "Couldn't grab due to database error."
+        liftIO (withDB $ doInsert params) >>= confirm >>= respond
+
+    doInsert ps c = do r <- run c sql ps
+                       if r == 1 then commit c >> return True
+                                 else return False
+
+    sql = "INSERT INTO quotegrabs (nick, hostmask, added_by, added_at, "
+          ++ "quote) VALUES (?, ?, ?, ?, ?)"
+
+    confirm True  = do liftIO $ modifyIORef ref (nick `Map.delete`)
+                       return "Gotcha."
+    confirm False = return "Couldn't grab due to database error."
+
 grab _ _ = respond "Please specify one nickname."
 
 grabTracker ref (user, PrivMsg (Channel ch) chat) = do
